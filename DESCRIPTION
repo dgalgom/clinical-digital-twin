@@ -16,6 +16,10 @@ Depends:
 Imports:
     DBI,
     RSQLite,
+    plogr,
+    memoise,
+    bit64,
+    blob,
     dplyr,
     tidyr,
     tibble,

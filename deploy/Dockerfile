@@ -27,7 +27,7 @@ WORKDIR /app
 
 # Install R package dependencies (pinned to CRAN). Kept as one layer for cache.
 RUN R -e "install.packages(c( \
-    'DBI','RSQLite','dplyr','tidyr','tibble','lubridate','jsonlite','sodium', \
+    'DBI','RSQLite','plogr','memoise','bit64','blob','dplyr','tidyr','tibble','lubridate','jsonlite','sodium', \
     'plumber','httr2','curl'), repos='https://cloud.r-project.org')"
 
 # Copy the project source.

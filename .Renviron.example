@@ -15,6 +15,8 @@ ANTHROPIC_API_KEY=
 
 # Enables live Telegram sends. If unset, outgoing messages are captured
 # in-memory (MOCK mode) so the webhook logic can be tested offline.
+# Set this (from BotFather) to run the bot locally with no public URL:
+#   Rscript api/run_bot_poll.R   # long-polling runner (no webhook / no Render)
 # NEVER commit a real token. Put the real value in .Renviron (git-ignored) only.
 TELEGRAM_BOT_TOKEN=
 
@@ -33,7 +35,8 @@ TELEGRAM_WEBHOOK_SECRET=
 # CDT_DB_PATH=./data/clinical_twin.sqlite
 # CDT_MODEL_PATH=./data/fall_risk_model.rds
 # Base URL the Telegram bot uses for its /dashboard deep link (no secret).
-# CDT_APP_URL=http://127.0.0.1:3838
+# Point this at your deployed dashboard; falls back to the local URL if unset.
+# CDT_APP_URL=https://dgalgom.shinyapps.io/clinical-digital-twin/
 
 # Freeze "today" for a reproducible build. When set, BOTH the R layer
 # (cdt_data_end_date) and the MCP date server (inst/mcp/date_server.py, wired via

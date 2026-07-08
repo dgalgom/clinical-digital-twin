@@ -57,5 +57,7 @@ rsconnect::deployApp(
   appName = app_name,
   forceUpdate = TRUE
 )
-message("Done. Your dashboard URL will be printed above / shown in the ",
-  "shinyapps.io dashboard. Use it as CDT_APP_URL for the bot's /dashboard link.")
+message("Done. With the default name the URL is ",
+  "https://<account>.shinyapps.io/", app_name, "/ (e.g. ",
+  "https://dgalgom.shinyapps.io/clinical-digital-twin/). Use it as ",
+  "CDT_APP_URL for the bot's /dashboard deep link.")

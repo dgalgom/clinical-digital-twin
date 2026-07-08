@@ -10,7 +10,7 @@ root <- if (length(file_arg) == 1) normalizePath(dirname(file_arg)) else normali
 setwd(root)
 Sys.setenv(CDT_PROJECT_ROOT = root)
 
-core <- c("DBI", "RSQLite", "dplyr", "tidyr", "tibble", "lubridate",
+core <- c("DBI", "RSQLite", "plogr", "memoise", "bit64", "blob", "dplyr", "tidyr", "tibble", "lubridate",
   "jsonlite", "sodium")
 frontend <- c("shiny", "bslib", "plotly", "DT", "plumber", "httr2", "testthat")
 all_pkgs <- c(core, frontend)

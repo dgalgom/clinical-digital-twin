@@ -13,6 +13,37 @@ shinyapps.io runs only Shiny apps, so it **cannot** host the Telegram webhook �
 
 ---
 
+## Part 0 — Run the bot locally (no public URL, no Render)
+
+The fastest way to get a **working** bot calling the Claude API is **long-polling**:
+`api/run_bot_poll.R` pulls messages from Telegram over an outbound HTTPS
+connection and feeds them to the same dispatcher the webhook uses. No inbound
+URL, tunnel, or hosting is required — only your machine and a terminal.
+
+```bash
+# 1. Put your real secrets in a git-ignored .env (copy from .Renviron.example):
+#      TELEGRAM_BOT_TOKEN=<from BotFather>
+#      ANTHROPIC_API_KEY=<your Anthropic key>   # omit -> deterministic mock replies
+#      CDT_APP_URL=https://dgalgom.shinyapps.io/clinical-digital-twin/
+# 2. Build the synthetic DB + model once:
+Rscript setup.R
+# 3. Start the bot (stays online; Ctrl-C to stop):
+Rscript api/run_bot_poll.R
+```
+
+It prints `LLM mode: LIVE Claude` when `ANTHROPIC_API_KEY` is set (else `MOCK`).
+In Telegram: `/start` → `login as clinician` → `How is patient P001 trending?`.
+
+> **Polling vs webhook are mutually exclusive.** If a webhook was ever registered
+> for this bot, `getUpdates` returns HTTP 409. Clear it first:
+> `curl "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`. Use Part 0 (polling)
+> **or** Parts 2+4 (webhook), not both.
+
+Trade-off: the bot only runs while that terminal/process is up. For always-on
+hosting use the Render webhook path (Parts 2 + 4) instead.
+
+---
+
 ## Part 1 — Dashboard on shinyapps.io
 
 **One-time local setup (you do this — it involves your account token):**
@@ -123,7 +154,13 @@ Then message your bot: `/start` → `login as clinician` → `/triage`, `/histor
 
 ## Why the bot was silent before
 
-There is **no polling loop** — the bot is webhook-only. `/start` does nothing until
-all three are true: `TELEGRAM_BOT_TOKEN` is set on the host, the API is reachable
-over public HTTPS (Render), and `setWebhook` has pointed Telegram at it. Parts 2
-and 4 establish exactly that.
+Out of the box the bot is **webhook-only**, so `/start` did nothing until Telegram
+had a public HTTPS endpoint to POST to. Two ways to fix it:
+
+- **Local, simplest (Part 0):** `Rscript api/run_bot_poll.R` — long-polls Telegram,
+  no public URL needed. Runs while the process is up.
+- **Always-on (Parts 2 + 4):** host `api/plumber.R` on Render and register the
+  webhook with `setWebhook`. Requires `TELEGRAM_BOT_TOKEN` on the host, a public
+  HTTPS URL, and the `setWebhook` call.
+
+Either path calls the Claude API automatically once `ANTHROPIC_API_KEY` is set.

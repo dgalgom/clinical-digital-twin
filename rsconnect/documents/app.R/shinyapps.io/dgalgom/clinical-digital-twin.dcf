@@ -1,0 +1,10 @@
+name: clinical-digital-twin
+title:
+username: dgalgom
+account: dgalgom
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 17593187
+bundleId: 12238657
+url: https://dgalgom.shinyapps.io/clinical-digital-twin/
+version: 1
