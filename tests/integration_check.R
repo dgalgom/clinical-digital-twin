@@ -20,6 +20,10 @@ model <- cdt_load_model()
 cdt_bot_reset()
 invisible(cdt_telegram_sent(clear = TRUE))
 
+# Username gate: identify with the seeded demo clinician before querying.
+gate <- cdt_bot_handle_message(con, model, chat_id = 12345, text = "login as clinician")
+stopifnot(grepl("Signed in", gate))
+
 reply <- cdt_bot_handle_message(con, model, chat_id = 12345,
   text = "How is patient P048 trending?")
 cdt_telegram_send(12345, reply)

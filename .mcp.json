@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cdt-date": {
+      "command": "python3",
+      "args": ["inst/mcp/date_server.py"],
+      "env": {}
+    }
+  }
+}

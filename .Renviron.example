@@ -1,5 +1,12 @@
-# Copy to .Renviron (which is git-ignored) and fill in.
+# Copy to .Renviron (or .env) -- both are git-ignored -- and fill in.
 # The application reads secrets ONLY from the environment; nothing is hardcoded.
+#
+# On launch, app.R and api/plumber.R call cdt_load_env() (R/env.R), which loads
+# a git-ignored .env if present (else falls back to .Renviron). Precedence is
+# shell/CI > .env > .Renviron. Non-empty keys here make live mode automatic;
+# an empty placeholder (KEY=) is skipped, so an unfilled copy keeps MOCK mode.
+# To force mock even with keys present, set CDT_MOCK_LLM=1 / CDT_MOCK_TELEGRAM=1.
+# Values are never printed by the loader.
 
 # Enables live Claude replies in the Telegram bot. If unset, the bot runs in a
 # deterministic MOCK mode (no network, no key needed).
@@ -11,12 +18,28 @@ ANTHROPIC_API_KEY=
 # NEVER commit a real token. Put the real value in .Renviron (git-ignored) only.
 TELEGRAM_BOT_TOKEN=
 
+# Optional webhook hardening. Pick any random string, pass it to Telegram as
+# setWebhook(secret_token=...); Telegram then echoes it in the
+# X-Telegram-Bot-Api-Secret-Token header on every webhook POST. When this is
+# SET, /telegram/webhook rejects requests whose header does not match (401).
+# When UNSET, the check is disabled (dev/mock/offline stays green).
+# NEVER commit a real value. Put it in .Renviron (git-ignored) only.
+TELEGRAM_WEBHOOK_SECRET=
+
 # Optional overrides (sensible defaults exist for all of these):
 # CDT_CLAUDE_MODEL=claude-sonnet-4-6
 # CDT_API_HOST=127.0.0.1
 # CDT_API_PORT=8000
 # CDT_DB_PATH=./data/clinical_twin.sqlite
 # CDT_MODEL_PATH=./data/fall_risk_model.rds
+# Base URL the Telegram bot uses for its /dashboard deep link (no secret).
+# CDT_APP_URL=http://127.0.0.1:3838
+
+# Freeze "today" for a reproducible build. When set, BOTH the R layer
+# (cdt_data_end_date) and the MCP date server (inst/mcp/date_server.py, wired via
+# .mcp.json as the "cdt-date" server) return this date, so relative-window
+# anchoring stays aligned with the synthetic timeline. Unset -> system date.
+# CDT_DATA_END_DATE=2026-03-31
 
 # Force mock modes explicitly (useful for CI/demo without keys):
 # CDT_MOCK_LLM=1

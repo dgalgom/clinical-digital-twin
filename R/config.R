@@ -48,6 +48,53 @@ cdt_model_path <- function() {
   file.path(cdt_project_root(), "data", "fall_risk_model.rds")
 }
 
+#' First date of the synthetic sensor timeline
+#'
+#' The demo cohort's daily read-outs begin on this date. Fixed so the timeline
+#' is reproducible; the *end* of the timeline tracks "today" (see
+#' [cdt_data_end_date()]) so that relative queries like "the previous two
+#' months" land on real data.
+#'
+#' @return A `Date`.
+#' @export
+cdt_data_start_date <- function() {
+  as.Date("2026-01-01")
+}
+
+#' Last date of the synthetic sensor timeline ("today")
+#'
+#' Defaults to the current system date so the ingested-daily timeline always
+#' ends at "today", making real-clock-anchored relative windows resolve onto
+#' real rows. Override with `CDT_DATA_END_DATE=YYYY-MM-DD` for a fully
+#' reproducible build (e.g. in CI or a frozen release).
+#'
+#' @return A `Date`.
+#' @export
+cdt_data_end_date <- function() {
+  override <- Sys.getenv("CDT_DATA_END_DATE", unset = NA)
+  if (!is.na(override) && nzchar(override)) {
+    d <- tryCatch(as.Date(override), error = function(e) NA)
+    if (!is.na(d)) {
+      return(d)
+    }
+  }
+  Sys.Date()
+}
+
+#' Number of daily read-outs spanning the synthetic timeline
+#'
+#' The inclusive day count from [cdt_data_start_date()] to [cdt_data_end_date()].
+#' Guarded to a sensible minimum so a misconfigured end date cannot produce an
+#' empty or degenerate series.
+#'
+#' @param min_days Lower bound on the span (default 90, the original sizing).
+#' @return An integer number of days.
+#' @export
+cdt_data_days <- function(min_days = 90L) {
+  span <- as.integer(cdt_data_end_date() - cdt_data_start_date()) + 1L
+  max(as.integer(min_days), span)
+}
+
 #' Fall-risk tier cutoffs
 #'
 #' Probabilities at or above `high` are "High", at or above `moderate` are

@@ -1,0 +1,168 @@
+# Step 5e: Telegram command surface (description + menu commands).
+
+.cmd_seeded_con <- function(fx) {
+  con <- cdt_db_connect(tempfile(fileext = ".sqlite"))
+  cdt_db_init_schema(con)
+  cdt_db_write(con, "patients", fx$cohort, append = TRUE)
+  cdt_db_write(con, "sensor_readings", fx$sim$readings, append = TRUE)
+  if (nrow(fx$sim$falls) > 0) {
+    cdt_db_write(con, "fall_events", fx$sim$falls, append = TRUE)
+  }
+  cdt_create_user(con, "dr_cmd", "pw12345")
+  con
+}
+
+.cmd_login <- function(con, model, chat_id) {
+  cdt_bot_handle_message(con, model, chat_id, "login as dr_cmd", llm_mock = TRUE)
+}
+
+.is_png_cmd <- function(p) {
+  if (is.null(p) || !is.character(p) || !nzchar(p) || !file.exists(p)) {
+    return(FALSE)
+  }
+  identical(as.integer(readBin(p, "raw", 8L)[1:4]), c(137L, 80L, 78L, 71L))
+}
+
+# --- description + menu -----------------------------------------------------
+
+test_that("cdt_bot_commands lists the expected commands", {
+  cmds <- cdt_bot_commands()
+  expect_true(is.data.frame(cmds))
+  expect_true(all(c("command", "description") %in% names(cmds)))
+  expect_true(all(c(
+    "start", "help", "risk", "history", "whatif",
+    "triage", "drivers", "explain", "dashboard"
+  ) %in% cmds$command))
+  # Descriptions are non-empty and carry no leading slash in `command`.
+  expect_true(all(nzchar(cmds$description)))
+  expect_false(any(grepl("^/", cmds$command)))
+})
+
+test_that("description functions are warm/professional and non-empty", {
+  expect_true(nzchar(cdt_bot_tagline()))
+  d <- cdt_bot_description()
+  expect_match(d, "decision-support", ignore.case = TRUE)
+  expect_match(d, "synthetic", ignore.case = TRUE)
+})
+
+# --- open commands (no auth) ------------------------------------------------
+
+test_that("/start, /help, /explain work without authentication", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+
+  s <- cdt_bot_reply(con, fx$model, "cS", "/start", llm_mock = TRUE)
+  expect_match(s$text, "login as")
+  expect_null(s$photo)
+
+  h <- cdt_bot_reply(con, fx$model, "cH", "/help", llm_mock = TRUE)
+  expect_match(h$text, "/triage")
+  expect_match(h$text, "/whatif")
+
+  e <- cdt_bot_reply(con, fx$model, "cE", "/explain", llm_mock = TRUE)
+  expect_match(e$text, "does NOT model")
+})
+
+# --- gated commands ---------------------------------------------------------
+
+test_that("gated commands require login", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+
+  r <- cdt_bot_reply(con, fx$model, "cG", "/triage", llm_mock = TRUE)
+  expect_match(r$text, "identify yourself", ignore.case = TRUE)
+})
+
+test_that("/triage ranks patients by 7-day risk", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  .cmd_login(con, fx$model, "cT")
+
+  r <- cdt_bot_reply(con, fx$model, "cT", "/triage 3", llm_mock = TRUE)
+  expect_match(r$text, "Top 3 patients")
+  # Three ranked lines.
+  expect_equal(length(gregexpr("7d=", r$text)[[1]]), 3)
+  expect_null(r$photo)
+
+  # Ranking is monotonically non-increasing in 7-day risk.
+  snap <- cdt_cohort_snapshot(con, fx$model)
+  expect_true(all(diff(head(snap$p_7d, 5)) <= 1e-9))
+})
+
+test_that("/risk returns numbers only for the focus/explicit patient", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cR")
+
+  r <- cdt_bot_reply(con, fx$model, "cR", sprintf("/risk %s", pid), llm_mock = TRUE)
+  expect_match(r$text, sprintf("%s fall risk", pid))
+  expect_match(r$text, "24h=")
+  expect_match(r$text, "7d=")
+  expect_null(r$photo)
+})
+
+test_that("/history renders the functional-history chart", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cHi")
+
+  r <- cdt_bot_reply(con, fx$model, "cHi", sprintf("/history %s", pid),
+    llm_mock = TRUE)
+  expect_true(nzchar(r$text))
+  expect_true(.is_png_cmd(r$photo))
+  unlink(r$photo)
+})
+
+test_that("/whatif routes through the what-if pipeline", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cW")
+
+  r <- cdt_bot_reply(con, fx$model, "cW",
+    sprintf("/whatif %s more activity 20%%", pid), llm_mock = TRUE)
+  expect_true(nzchar(r$text))
+})
+
+test_that("/drivers lists model drivers for the patient", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cD")
+
+  r <- cdt_bot_reply(con, fx$model, "cD", sprintf("/drivers %s", pid),
+    llm_mock = TRUE)
+  expect_match(r$text, "Top model drivers")
+  expect_null(r$photo)
+})
+
+test_that("/dashboard returns a deep link with the patient", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cDash")
+
+  r <- cdt_bot_reply(con, fx$model, "cDash", sprintf("/dashboard %s", pid),
+    llm_mock = TRUE)
+  expect_match(r$text, "http")
+  expect_match(r$text, pid)
+  expect_null(r$photo)
+})

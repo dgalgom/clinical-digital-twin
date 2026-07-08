@@ -14,6 +14,7 @@
 # ---------------------------------------------------------------------------
 
 library(shiny)
+library(bslib)
 library(plotly)
 library(DT)
 library(dplyr)
@@ -27,6 +28,12 @@ for (f in list.files(file.path(.root, "R"), pattern = "\\.R$", full.names = TRUE
   source(f)
 }
 
+# Load secrets/overrides from a git-ignored .env (or .Renviron) if present.
+# Non-destructive: existing shell/CI vars win; empty placeholders are skipped,
+# so the Claude/Telegram clients keep their auto-mock fallback when no key is
+# supplied. Values are never printed.
+cdt_load_env()
+
 # Shared resources.
 con <- cdt_db_connect()
 model <- cdt_load_model()
@@ -34,28 +41,68 @@ model <- cdt_load_model()
 # Risk-tier colors (clinically legible; no chart-junk).
 TIER_COLORS <- c(Low = "#2e7d32", Moderate = "#f9a825", High = "#c62828")
 
+# Dark palette (shared by CSS + plot templates).
+CDT_BG <- "#0e1116"       # page background
+CDT_PANEL <- "#161b22"    # cards / plot panels
+CDT_FG <- "#e6edf3"       # primary text
+CDT_GRID <- "#30363d"     # borders / gridlines
+CDT_ACCENT <- "#3d8bfd"   # primary accent
+
+# Professional dark theme (Bootstrap 5 via bslib). If the "darkly" bootswatch
+# is unavailable on the installed bslib, fall back to a plain dark base_theme.
+cdt_theme <- tryCatch(
+  bslib::bs_theme(
+    version = 5, bootswatch = "darkly",
+    bg = CDT_BG, fg = CDT_FG, primary = CDT_ACCENT
+  ),
+  error = function(e) bslib::bs_theme(
+    version = 5, bg = CDT_BG, fg = CDT_FG, primary = CDT_ACCENT
+  )
+)
+
+# Apply the dark template to a plotly object (bg/font/grid only; traces/data
+# and tier colors are left untouched to preserve clinical legibility).
+dark_layout <- function(p) {
+  ax <- list(gridcolor = CDT_GRID, zerolinecolor = CDT_GRID,
+    linecolor = CDT_GRID, tickfont = list(color = CDT_FG),
+    titlefont = list(color = CDT_FG))
+  plotly::layout(p,
+    paper_bgcolor = CDT_PANEL, plot_bgcolor = CDT_PANEL,
+    font = list(color = CDT_FG),
+    legend = list(font = list(color = CDT_FG)),
+    xaxis = ax, yaxis = ax)
+}
+
 # --- UI --------------------------------------------------------------------
 
 login_ui <- function() {
   div(
-    style = "max-width:360px;margin:80px auto;padding:24px;border:1px solid #ddd;border-radius:8px;",
-    h3("Clinical Digital Twin"),
-    p(style = "color:#888;font-size:13px;", "Synthetic-data prototype. Not for clinical use."),
+    style = sprintf(
+      paste0("max-width:380px;margin:80px auto;padding:28px;",
+        "background:%s;border:1px solid %s;border-radius:10px;",
+        "box-shadow:0 2px 16px rgba(0,0,0,0.45);"),
+      CDT_PANEL, CDT_GRID),
+    h3("Clinical Digital Twin", style = sprintf("color:%s;", CDT_FG)),
+    p(style = "color:#8b98a5;font-size:13px;",
+      "Synthetic-data prototype. Not for clinical use."),
     textInput("login_user", "Username", value = "clinician"),
     passwordInput("login_pass", "Password", value = ""),
     actionButton("login_btn", "Log in", class = "btn-primary"),
     br(), br(),
-    div(style = "color:#c62828;", textOutput("login_msg"))
+    div(style = "color:#ff6b6b;", textOutput("login_msg"))
   )
 }
 
 dashboard_ui <- function() {
   fluidPage(
-    tags$head(tags$style(HTML("
+    tags$head(tags$style(HTML(sprintf("
       .risk-badge{padding:2px 8px;border-radius:10px;color:#fff;font-weight:600;}
-      .banner{background:#fff8e1;border:1px solid #ffe082;padding:6px 12px;
-              border-radius:6px;font-size:12px;margin-bottom:10px;}
-    "))),
+      .banner{background:#3a2f00;border:1px solid #8a6d00;color:#ffd873;
+              padding:6px 12px;border-radius:6px;font-size:12px;margin-bottom:10px;}
+      .dataTables_wrapper{color:%s;}
+      table.dataTable tbody tr{background-color:%s;}
+      table.dataTable{border-color:%s;}
+    ", CDT_FG, CDT_PANEL, CDT_GRID)))),
     div(class = "banner",
       "\u26A0 All patient data is SYNTHETIC. Hackathon prototype - not for clinical use."),
     fluidRow(
@@ -116,12 +163,19 @@ dashboard_ui <- function() {
             uiOutput("whatif_summary")
           )
         )
+      ),
+      tabPanel(
+        "Patient data",
+        br(),
+        p(style = "color:#8b98a5;",
+          "Full synthetic cohort - not real patients. Search, sort, and export below."),
+        DTOutput("patient_data_table")
       )
     )
   )
 }
 
-ui <- fluidPage(uiOutput("main_ui"))
+ui <- fluidPage(theme = cdt_theme, uiOutput("main_ui"))
 
 # --- Server ----------------------------------------------------------------
 
@@ -201,6 +255,40 @@ server <- function(input, output, session) {
     }
   })
 
+  # --- Patient data tab (full synthetic cohort) ----------------------------
+  yn <- function(x) ifelse(as.integer(x) == 1L, "Yes", "No")
+
+  output$patient_data_table <- renderDT({
+    snap <- cohort_snap()
+    if (nrow(snap) == 0) {
+      return(datatable(
+        data.frame(Message = "No patients in the (synthetic) database."),
+        rownames = FALSE, options = list(dom = "t")))
+    }
+    disp <- snap %>%
+      transmute(
+        Patient = patient_id, Name = name, Age = age, Sex = sex,
+        Comorbidities = comorbidities,
+        Parkinsons = yn(parkinsons), Osteoporosis = yn(osteoporosis),
+        `Orthostatic hypotension` = yn(orthostatic_hypotension),
+        Polypharmacy = yn(polypharmacy),
+        `Prior falls` = prior_falls, `# Meds` = n_medications,
+        Medications = medications,
+        `24h risk` = sprintf("%.1f%%", 100 * p_24h),
+        `7d risk` = sprintf("%.1f%%", 100 * p_7d),
+        Tier = tier_7d
+      )
+    datatable(disp, rownames = FALSE, filter = "top",
+      extensions = "Buttons",
+      options = list(
+        pageLength = 15, dom = "Bfrtip",
+        buttons = c("copy", "csv", "excel"),
+        scrollX = TRUE)) %>%
+      formatStyle("Tier",
+        backgroundColor = styleEqual(names(TIER_COLORS), unname(TIER_COLORS)),
+        color = "white", fontWeight = "bold")
+  })
+
   # --- Patient detail data -------------------------------------------------
   patient_readings <- reactive({
     req(input$sel_patient)
@@ -240,9 +328,10 @@ server <- function(input, output, session) {
     plot_ly(df, x = ~ts, y = as.formula(paste0("~", y)),
       type = "scatter", mode = "lines+markers",
       line = list(color = color), marker = list(size = 3, color = color)) %>%
-      layout(title = list(text = title, font = list(size = 13)),
+      layout(title = list(text = title, font = list(size = 13, color = CDT_FG)),
         xaxis = list(title = ""), yaxis = list(title = yaxis),
-        margin = list(t = 30, b = 30))
+        margin = list(t = 30, b = 30)) %>%
+      dark_layout()
   }
 
   output$plot_steps <- renderPlotly(
@@ -252,11 +341,12 @@ server <- function(input, output, session) {
   output$plot_bp <- renderPlotly({
     df <- patient_readings()
     plot_ly(df, x = ~ts) %>%
-      add_lines(y = ~sbp, name = "Systolic", line = list(color = "#6a1b9a")) %>%
-      add_lines(y = ~dbp, name = "Diastolic", line = list(color = "#ab47bc")) %>%
-      layout(title = list(text = "Blood pressure", font = list(size = 13)),
+      add_lines(y = ~sbp, name = "Systolic", line = list(color = "#b085f5")) %>%
+      add_lines(y = ~dbp, name = "Diastolic", line = list(color = "#ce93d8")) %>%
+      layout(title = list(text = "Blood pressure", font = list(size = 13, color = CDT_FG)),
         xaxis = list(title = ""), yaxis = list(title = "mmHg"),
-        margin = list(t = 30, b = 30))
+        margin = list(t = 30, b = 30)) %>%
+      dark_layout()
   })
   output$plot_sedentary <- renderPlotly({
     df <- patient_readings()
@@ -271,7 +361,8 @@ server <- function(input, output, session) {
       type = "bar", orientation = "h",
       marker = list(color = ifelse(imp$coefficient > 0, "#c62828", "#2e7d32"))) %>%
       layout(xaxis = list(title = "|standardized coefficient|"),
-        yaxis = list(title = ""), margin = list(l = 160, t = 10))
+        yaxis = list(title = ""), margin = list(l = 160, t = 10)) %>%
+      dark_layout()
   })
 
   # --- What-if simulator ---------------------------------------------------
@@ -298,10 +389,11 @@ server <- function(input, output, session) {
       risk = c(r$baseline$p_24h, r$baseline$p_7d, r$p_24h, r$p_7d)
     )
     plot_ly(df, x = ~horizon, y = ~risk, color = ~scenario, type = "bar",
-      colors = c("Baseline" = "#90a4ae", "Simulated twin" = "#1565c0")) %>%
+      colors = c("Baseline" = "#90a4ae", "Simulated twin" = "#3d8bfd")) %>%
       layout(barmode = "group", yaxis = list(title = "P(fall)", tickformat = ".0%"),
         xaxis = list(title = ""), title = list(text = "Baseline vs. simulated twin",
-          font = list(size = 13)))
+          font = list(size = 13, color = CDT_FG))) %>%
+      dark_layout()
   })
 
   output$whatif_summary <- renderUI({

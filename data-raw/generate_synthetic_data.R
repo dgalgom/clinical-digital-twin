@@ -52,10 +52,11 @@ set.seed(42)
 
 # --- 1. Cohort ------------------------------------------------------------
 message("Generating synthetic cohort...")
-# 100 patients x 90 daily read-outs: sized so the 7-day horizon has enough
-# events (~50) for stable coefficient signs and a held-out 7d AUC well above
-# chance (see checkpoints/evaluate_model.R). Smaller cohorts leave the 7d model
-# under-identified and flip weaker coefficient signs.
+# 100 patients x (>= 90) daily read-outs: sized so the 7-day horizon has enough
+# events for stable coefficient signs and a held-out 7d AUC well above chance
+# (see checkpoints/evaluate_model.R). The per-patient span now runs to "today"
+# (see the sensor step below), so the read-out count is >= the original 90-day
+# floor; more days only add events, which keeps the 7d model well-identified.
 cohort <- cdt_generate_cohort(n = 100, seed = 42)
 message(sprintf("  %d patients generated.", nrow(cohort)))
 
@@ -76,9 +77,18 @@ cdt_validate_patients(cohort)
 message("  Ingestion + validation OK.")
 
 # --- 2. Sensors + falls ---------------------------------------------------
-message("Simulating wearable sensor streams...")
-sim <- cdt_simulate_cohort_sensors(cohort, days = 90,
-  start_date = as.Date("2026-01-01"), seed = 7)
+# The timeline is ingested "daily": it starts on a fixed date and ENDS at
+# "today" (cdt_data_end_date(), = Sys.Date() unless CDT_DATA_END_DATE is set),
+# so real-clock relative queries ("previous two months") resolve onto real
+# rows. That makes the span >= 90 days (the original sizing floor); the model
+# is retrained on whatever span results, and the statistical checkpoint
+# re-baselines against it. Set CDT_DATA_END_DATE=YYYY-MM-DD for a frozen build.
+start_date <- cdt_data_start_date()
+days <- cdt_data_days()
+message(sprintf("Simulating wearable sensor streams (%s .. %s, %d days)...",
+  start_date, cdt_data_end_date(), days))
+sim <- cdt_simulate_cohort_sensors(cohort, days = days,
+  start_date = start_date, seed = 7)
 message(sprintf("  %d sensor readings, %d fall events.",
   nrow(sim$readings), nrow(sim$falls)))
 

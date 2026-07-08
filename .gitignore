@@ -17,5 +17,9 @@ renv/python/
 .Renviron
 *.env
 
+# Python bytecode cache (from the MCP date server)
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store

@@ -27,6 +27,12 @@ for (f in list.files(file.path(.root, "R"), pattern = "\\.R$", full.names = TRUE
   source(f)
 }
 
+# Load secrets/overrides from a git-ignored .env (or .Renviron) if present.
+# Non-destructive: existing shell/CI vars win; empty placeholders are skipped,
+# so the Claude/Telegram clients keep their auto-mock fallback when no key is
+# supplied. Values are never printed.
+cdt_load_env()
+
 # Shared, long-lived resources for the API process.
 .api_con <- cdt_db_connect()
 .api_model <- cdt_load_model()
@@ -56,6 +62,21 @@ for (f in list.files(file.path(.root, "R"), pattern = "\\.R$", full.names = TRUE
     return(NULL)
   }
   sess
+}
+
+# Verify the Telegram webhook secret token. Telegram echoes the value passed to
+# setWebhook(secret_token=...) in the `X-Telegram-Bot-Api-Secret-Token` header.
+# The check is OPT-IN: it runs only when TELEGRAM_WEBHOOK_SECRET is set in the
+# environment, so mock/offline/dev (no secret) keeps working. When the secret is
+# set and the header is missing or mismatched, this returns FALSE (caller -> 401).
+# The secret is read from the env and never logged.
+.webhook_secret_ok <- function(req) {
+  secret <- Sys.getenv("TELEGRAM_WEBHOOK_SECRET")
+  if (!nzchar(secret)) {
+    return(TRUE) # unset -> check disabled
+  }
+  hdr <- req$HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN
+  !is.null(hdr) && identical(as.character(hdr), secret)
 }
 
 # --- endpoints -------------------------------------------------------------
@@ -150,6 +171,11 @@ function(req, res, patient_id = "") {
 #* Telegram webhook: receive an update, run the bot, reply via Telegram
 #* @post /telegram/webhook
 function(req, res) {
+  # Reject spoofed webhook POSTs when a secret is configured (no-op when unset).
+  if (!.webhook_secret_ok(req)) {
+    res$status <- 401
+    return(list(ok = FALSE))
+  }
   update <- tryCatch(jsonlite::fromJSON(req$postBody), error = function(e) NULL)
   if (is.null(update) || is.null(update$message)) {
     return(list(ok = TRUE))
@@ -157,8 +183,11 @@ function(req, res) {
   chat_id <- update$message$chat$id
   text <- update$message$text %||% ""
 
-  reply <- cdt_bot_handle_message(.api_con, .api_model, chat_id, text)
-  cdt_telegram_send(chat_id, reply)
+  reply <- cdt_bot_reply(.api_con, .api_model, chat_id, text)
+  cdt_telegram_send(chat_id, reply$text)
+  if (!is.null(reply$photo)) {
+    cdt_telegram_send_photo(chat_id, reply$photo)
+  }
 
   list(ok = TRUE)
 }

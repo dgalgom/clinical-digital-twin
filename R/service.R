@@ -74,8 +74,12 @@ cdt_patient_context <- function(con, model, patient_id, modified_inputs = NULL) 
   imp <- utils::head(cdt_feature_importance(model, "7d"), 5)
 
   lines <- c(
-    sprintf("Patient %s (%s), age %d, sex %s.",
-      patient$patient_id, patient$name, patient$age, patient$sex),
+    # De-identified: the patient `name` is deliberately NOT sent to the LLM.
+    # Only the coded patient_id, age, and sex cross the API boundary (see
+    # docs/production_readiness.md feature A1). Everything below is coded
+    # clinical flags and model outputs.
+    sprintf("Patient %s, age %d, sex %s.",
+      patient$patient_id, patient$age, patient$sex),
     sprintf("Risk factors: parkinsons=%d, osteoporosis=%d, orthostatic_hypotension=%d, polypharmacy=%d, prior_falls=%d, n_medications=%d.",
       patient$parkinsons, patient$osteoporosis, patient$orthostatic_hypotension,
       patient$polypharmacy, patient$prior_falls, patient$n_medications),

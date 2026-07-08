@@ -115,6 +115,32 @@ cdt_validate_session <- function(con, token) {
   )
 }
 
+#' Check whether a username exists (read-only)
+#'
+#' A lightweight, side-effect-free lookup used by the Telegram bot's username
+#' gate: the clinician states a known username to unlock the (synthetic-data)
+#' bot. NO password is handled here and nothing is written — it only answers
+#' "is this a known user?". Passwords must never travel over Telegram.
+#'
+#' @param con A DBI connection.
+#' @param username Candidate username (trimmed; empty/NULL -> FALSE).
+#' @return `TRUE` if a `users` row with that username exists, else `FALSE`.
+#' @export
+cdt_user_exists <- function(con, username) {
+  if (is.null(username)) {
+    return(FALSE)
+  }
+  username <- trimws(as.character(username))
+  if (length(username) != 1 || !nzchar(username)) {
+    return(FALSE)
+  }
+  row <- DBI::dbGetQuery(con,
+    "SELECT 1 FROM users WHERE username = ? LIMIT 1;",
+    params = list(username)
+  )
+  nrow(row) > 0
+}
+
 #' Invalidate a session token (logout)
 #'
 #' @param con A DBI connection.

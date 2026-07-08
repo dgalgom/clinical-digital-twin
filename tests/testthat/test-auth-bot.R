@@ -57,8 +57,15 @@ test_that("bot end-to-end produces a grounded mock reply", {
   cdt_db_write(con, "sensor_readings", fx$sim$readings, append = TRUE)
   if (nrow(fx$sim$falls) > 0) cdt_db_write(con, "fall_events", fx$sim$falls, append = TRUE)
 
+  cdt_create_user(con, "dr_bot", "pw12345")
   cdt_bot_reset()
   pid <- fx$cohort$patient_id[1]
+
+  # Username gate: unlock the chat before clinical queries.
+  gate <- cdt_bot_handle_message(con, fx$model, "chatX", "login as dr_bot",
+    llm_mock = TRUE)
+  expect_true(grepl("Signed in", gate))
+
   reply <- cdt_bot_handle_message(con, fx$model, "chatX",
     sprintf("How is patient %s trending?", pid), llm_mock = TRUE)
   expect_true(grepl("MOCK", reply))
@@ -68,6 +75,28 @@ test_that("bot end-to-end produces a grounded mock reply", {
   reply2 <- cdt_bot_handle_message(con, fx$model, "chatX",
     "what if we increase mobility by 30%?", llm_mock = TRUE)
   expect_true(nchar(reply2) > 0)
+})
+
+test_that("patient context is de-identified: no name reaches the LLM", {
+  fx <- make_test_fixtures()
+  con <- cdt_db_connect(tempfile(fileext = ".sqlite"))
+  on.exit(DBI::dbDisconnect(con))
+  cdt_db_init_schema(con)
+  cdt_db_write(con, "patients", fx$cohort, append = TRUE)
+  cdt_db_write(con, "sensor_readings", fx$sim$readings, append = TRUE)
+
+  pid <- fx$cohort$patient_id[1]
+  nm <- fx$cohort$name[fx$cohort$patient_id == pid]
+  ctx <- cdt_patient_context(con, fx$model, pid)
+
+  # The patient identifier, age, and sex still ground the reply...
+  expect_true(grepl(pid, ctx, fixed = TRUE))
+  # ...and the baseline risk line remains (mock-reply grep depends on it).
+  expect_true(grepl("fall risk", ctx, ignore.case = TRUE))
+  # ...but the human name must NOT appear anywhere in the prompt context.
+  if (nzchar(nm)) {
+    expect_false(grepl(nm, ctx, fixed = TRUE))
+  }
 })
 
 test_that("telegram mock captures outgoing messages", {

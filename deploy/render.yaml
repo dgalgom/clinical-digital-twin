@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Render blueprint for the Clinical Digital Twin bot / REST API.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# This provisions ONE Docker web service that runs api/plumber.R (the Telegram
+# webhook). The Shiny dashboard is hosted separately on shinyapps.io.
+#
+# Usage:
+#   1. Push this repo to GitHub.
+#   2. In Render: New + -> Blueprint -> pick this repo (render.yaml is detected).
+#   3. Set the secret env vars (marked sync:false) in the Render dashboard.
+#   4. After first deploy, copy the service URL and register the Telegram webhook
+#      (see docs/deployment.md).
+#
+# SECRETS are NOT stored here (sync:false). Enter them in the Render UI.
+# ---------------------------------------------------------------------------
+services:
+  - type: web
+    name: cdt-bot
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Render injects PORT automatically; the Dockerfile maps it to CDT_API_PORT.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # set in dashboard (BotFather token)
+      - key: ANTHROPIC_API_KEY
+        sync: false          # optional: enables live Claude replies
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false          # optional: hardens the webhook (recommended)
+      - key: CDT_APP_URL
+        sync: false          # your shinyapps.io dashboard URL (for /dashboard)

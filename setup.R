@@ -12,7 +12,7 @@ Sys.setenv(CDT_PROJECT_ROOT = root)
 
 core <- c("DBI", "RSQLite", "dplyr", "tidyr", "tibble", "lubridate",
   "jsonlite", "sodium")
-frontend <- c("shiny", "plotly", "DT", "plumber", "httr2", "testthat")
+frontend <- c("shiny", "bslib", "plotly", "DT", "plumber", "httr2", "testthat")
 all_pkgs <- c(core, frontend)
 
 if (requireNamespace("renv", quietly = TRUE) && file.exists("renv.lock")) {

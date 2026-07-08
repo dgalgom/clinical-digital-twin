@@ -112,6 +112,9 @@ ok("plumber router builds")
 step(6, "Exercising the Telegram bot in mock mode")
 cdt_bot_reset()
 invisible(cdt_telegram_sent(clear = TRUE))
+# Username gate: identify with the seeded demo clinician before querying.
+gate <- cdt_bot_handle_message(con, model, chat_id = 999, text = "login as clinician")
+if (!grepl("Signed in", gate)) fail("bot username gate did not accept 'clinician'")
 reply <- cdt_bot_handle_message(con, model, chat_id = 999,
   text = sprintf("How is patient %s trending?", pid))
 if (!nzchar(reply)) fail("bot returned an empty reply")
