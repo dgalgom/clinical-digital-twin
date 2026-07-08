@@ -4,7 +4,7 @@
     "Repositories": [
       {
         "Name": "CRAN",
-        "URL": "https://cloud.r-project.org"
+        "URL": "https://packagemanager.posit.co/cran/latest"
       }
     ]
   },
@@ -18,6 +18,12 @@
     "RSQLite": {
       "Package": "RSQLite",
       "Version": "2.4.5",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
+    "rlang": {
+      "Package": "rlang",
+      "Version": "1.1.7",
       "Source": "Repository",
       "Repository": "CRAN"
     },

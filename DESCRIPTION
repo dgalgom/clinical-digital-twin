@@ -20,6 +20,7 @@ Imports:
     memoise,
     bit64,
     blob,
+    rlang,
     dplyr,
     tidyr,
     tibble,

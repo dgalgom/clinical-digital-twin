@@ -19,11 +19,23 @@
 #  * NEVER put ANTHROPIC_API_KEY / TELEGRAM_* here. The dashboard does not need
 #    them; if you ever do, set them via the shinyapps.io dashboard env settings,
 #    never in the bundle.
+#
+# RSQLite COMPILE FIX (important):
+#  * shinyapps.io was failing to *compile* RSQLite from CRAN source. We avoid the
+#    source compile entirely by pointing the deploy at the Posit Public Package
+#    Manager (P3M), which serves precompiled Linux (Jammy) BINARIES for RSQLite
+#    and its dependencies. Setting `repos` below makes rsconnect record P3M in the
+#    bundle manifest, so the shinyapps.io builder installs the binary (fast, no gcc).
 # ---------------------------------------------------------------------------
 
 if (!requireNamespace("rsconnect", quietly = TRUE)) {
   stop("Please install.packages('rsconnect') and run setAccountInfo() first.")
 }
+
+# Resolve dependencies from P3M (binary packages) rather than CRAN source so the
+# shinyapps.io builder does not compile RSQLite (the previous failure point).
+# `latest` transparently serves Linux binaries to the shinyapps.io build image.
+options(repos = c(P3M = "https://packagemanager.posit.co/cran/latest"))
 
 root <- normalizePath(file.path(dirname(sub("^--file=", "",
   commandArgs(FALSE)[grep("^--file=", commandArgs(FALSE))])), ".."))

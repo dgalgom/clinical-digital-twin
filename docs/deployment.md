@@ -69,6 +69,16 @@ finishes it prints your URL, e.g. `https://<you>.shinyapps.io/clinical-digital-t
 - The dashboard needs **no** API keys.
 - Rename the app via `CDT_SHINYAPP_NAME=my-name Rscript deploy/deploy_shinyapps.R`.
 
+**RSQLite build failures (fixed):** shinyapps.io previously failed while trying to
+*compile* `RSQLite` from CRAN source. The fix is already applied — `renv.lock`'s
+CRAN repository points at the **Posit Public Package Manager**
+(`https://packagemanager.posit.co/cran/latest`), which serves precompiled Linux
+binaries. `rsconnect` captures dependencies from `renv.lock`, so the generated
+bundle manifest tells the shinyapps.io builder to install the RSQLite **binary**
+(no `gcc`, fast, reliable). If you regenerate the lockfile with
+`renv::snapshot()`, re-point that repository URL to P3M or the compile failure
+returns.
+
 Copy the resulting URL — you will give it to the bot as `CDT_APP_URL` in Part 2.
 
 ---

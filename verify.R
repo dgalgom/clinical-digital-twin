@@ -39,7 +39,7 @@ step <- function(n, msg) cat(sprintf("\n(%d) %s\n", n, msg))
 # --- 1. Packages ----------------------------------------------------------
 step(1, "Checking required packages")
 required <- c(
-  "DBI", "RSQLite", "plogr", "memoise", "bit64", "blob", "dplyr", "tidyr", "tibble", "jsonlite", "sodium",
+  "DBI", "RSQLite", "plogr", "memoise", "bit64", "blob", "rlang", "dplyr", "tidyr", "tibble", "jsonlite", "sodium",
   "plumber", "httr2", "testthat"
 )
 missing <- required[!vapply(required, requireNamespace, logical(1),

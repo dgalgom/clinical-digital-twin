@@ -10,7 +10,7 @@ root <- if (length(file_arg) == 1) normalizePath(dirname(file_arg)) else normali
 setwd(root)
 Sys.setenv(CDT_PROJECT_ROOT = root)
 
-core <- c("DBI", "RSQLite", "plogr", "memoise", "bit64", "blob", "dplyr", "tidyr", "tibble", "lubridate",
+core <- c("DBI", "RSQLite", "plogr", "memoise", "bit64", "blob", "rlang", "dplyr", "tidyr", "tibble", "lubridate",
   "jsonlite", "sodium")
 frontend <- c("shiny", "bslib", "plotly", "DT", "plumber", "httr2", "testthat")
 all_pkgs <- c(core, frontend)
@@ -23,7 +23,7 @@ if (requireNamespace("renv", quietly = TRUE) && file.exists("renv.lock")) {
   missing <- setdiff(all_pkgs, installed)
   if (length(missing) > 0) {
     message("Installing: ", paste(missing, collapse = ", "))
-    install.packages(missing, repos = "https://cloud.r-project.org")
+    install.packages(missing, dependencies = TRUE, repos = "https://cloud.r-project.org")
   } else {
     message("All required packages already installed.")
   }
