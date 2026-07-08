@@ -1,0 +1,34 @@
+Package: clinicaldigitaltwin
+Title: Clinical Digital Twin Monitoring System (Hackathon MVP)
+Version: 0.1.0
+Authors@R:
+    person("Hackathon", "Team", , "team@example.org", role = c("aut", "cre"))
+Description: A hackathon prototype that lets clinicians visualize synthetic
+    patient vitals/activity data and run "what-if" simulations on statistical
+    digital twins to estimate fall risk. All patient data is synthetic. Not
+    for clinical use.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.2.0)
+Imports:
+    DBI,
+    RSQLite,
+    dplyr,
+    tidyr,
+    tibble,
+    lubridate,
+    stats,
+    utils,
+    jsonlite,
+    sodium
+Suggests:
+    shiny,
+    plotly,
+    DT,
+    plumber,
+    httr2,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

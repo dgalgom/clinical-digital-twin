@@ -1,0 +1,23 @@
+# Copy to .Renviron (which is git-ignored) and fill in.
+# The application reads secrets ONLY from the environment; nothing is hardcoded.
+
+# Enables live Claude replies in the Telegram bot. If unset, the bot runs in a
+# deterministic MOCK mode (no network, no key needed).
+# NEVER commit a real key. Put the real value in .Renviron (git-ignored) only.
+ANTHROPIC_API_KEY=
+
+# Enables live Telegram sends. If unset, outgoing messages are captured
+# in-memory (MOCK mode) so the webhook logic can be tested offline.
+# NEVER commit a real token. Put the real value in .Renviron (git-ignored) only.
+TELEGRAM_BOT_TOKEN=
+
+# Optional overrides (sensible defaults exist for all of these):
+# CDT_CLAUDE_MODEL=claude-sonnet-4-6
+# CDT_API_HOST=127.0.0.1
+# CDT_API_PORT=8000
+# CDT_DB_PATH=./data/clinical_twin.sqlite
+# CDT_MODEL_PATH=./data/fall_risk_model.rds
+
+# Force mock modes explicitly (useful for CI/demo without keys):
+# CDT_MOCK_LLM=1
+# CDT_MOCK_TELEGRAM=1

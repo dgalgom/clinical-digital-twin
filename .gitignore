@@ -1,0 +1,21 @@
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Generated data / models (reproducible via data-raw/generate_synthetic_data.R)
+data/*.sqlite
+data/*.rds
+
+# renv library (keep lockfile, ignore the local library)
+renv/library/
+renv/staging/
+renv/python/
+
+# Secrets - never commit
+.Renviron
+*.env
+
+# OS
+.DS_Store
