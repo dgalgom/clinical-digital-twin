@@ -28,6 +28,8 @@ cdt_db_connect <- function(path = cdt_db_path()) {
 #' * `sensor_readings` - daily-resolution vitals/activity time series
 #' * `fall_events` - simulated ground-truth fall labels
 #' * `interventions` - clinician-logged actions (P0-3 closed loop)
+#' * `risk_snapshots` - per-patient risk history for delta computation (P0-1)
+#' * `alerts` - change-detection events for the shift-triage view (P0-1)
 #'
 #' @param con A DBI connection.
 #' @return Invisibly `TRUE`.
@@ -110,6 +112,39 @@ cdt_db_init_schema <- function(con) {
       FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
     );")
 
+  # Risk snapshots (P0-1): a persisted history of per-patient risk so the
+  # shift-triage view can compute "what changed since last shift". `as_of` is a
+  # logical label (e.g. an ISO date or "previous shift"); the delta compares the
+  # newest snapshot against the previous one for each patient.
+  DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS risk_snapshots (
+      snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id  TEXT NOT NULL,
+      as_of       TEXT NOT NULL,
+      p_24h       REAL,
+      p_7d        REAL,
+      tier_7d     TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+    );")
+
+  # Alerts (P0-1): change-detection events emitted by cdt_compute_alerts(). Each
+  # row is a movement worth a clinician's attention (risk jump or tier crossing),
+  # carrying a one-line human-readable reason and an acknowledgement audit trail.
+  DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS alerts (
+      alert_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id      TEXT NOT NULL,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      kind            TEXT NOT NULL,
+      severity        TEXT NOT NULL,
+      delta_pts       REAL,
+      reason_text     TEXT,
+      acknowledged_by TEXT,
+      acknowledged_at TEXT,
+      FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+    );")
+
   # Indexes for the common access patterns (patient timeline, cohort snapshot).
   DBI::dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_sensor_patient_ts
@@ -123,6 +158,12 @@ cdt_db_init_schema <- function(con) {
   DBI::dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_interventions_patient
       ON interventions(patient_id, created_at);")
+  DBI::dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_snapshots_patient
+      ON risk_snapshots(patient_id, created_at);")
+  DBI::dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_alerts_patient
+      ON alerts(patient_id, created_at);")
 
   invisible(TRUE)
 }
@@ -247,4 +288,109 @@ cdt_get_interventions <- function(con, patient_id = NULL) {
     )
   }
   tibble::as_tibble(res)
+}
+
+# --- Risk snapshots + alerts (P0-1 shift triage) ---------------------------
+
+#' Persist a cohort risk snapshot (P0-1)
+#'
+#' Writes one row per patient capturing their current risk under an `as_of`
+#' label, so a later snapshot can be diffed against it.
+#'
+#' @param con A DBI connection.
+#' @param snapshot A data frame with `patient_id`, `p_24h`, `p_7d`, `tier_7d`.
+#' @param as_of A short label for this snapshot (e.g. an ISO date).
+#' @return Invisibly the number of rows written.
+#' @export
+cdt_write_risk_snapshot <- function(con, snapshot, as_of) {
+  stopifnot(nzchar(as_of), nrow(snapshot) > 0,
+    all(c("patient_id", "p_24h", "p_7d", "tier_7d") %in% names(snapshot)))
+  df <- data.frame(
+    patient_id = as.character(snapshot$patient_id),
+    as_of      = as_of,
+    p_24h      = as.numeric(snapshot$p_24h),
+    p_7d       = as.numeric(snapshot$p_7d),
+    tier_7d    = as.character(snapshot$tier_7d),
+    stringsAsFactors = FALSE
+  )
+  DBI::dbWriteTable(con, "risk_snapshots", df, append = TRUE)
+  invisible(nrow(df))
+}
+
+#' Fetch the most recent risk snapshot (P0-1)
+#'
+#' Returns the rows belonging to the newest `as_of` group. "Newest" is decided
+#' by the maximum `snapshot_id` seen, so it is robust to snapshots sharing a
+#' coarse timestamp.
+#'
+#' @param con A DBI connection.
+#' @return A tibble (possibly zero-row) of the latest snapshot's rows.
+#' @export
+cdt_get_last_snapshot <- function(con) {
+  as_of <- DBI::dbGetQuery(con,
+    "SELECT as_of FROM risk_snapshots ORDER BY snapshot_id DESC LIMIT 1;")
+  if (nrow(as_of) == 0) {
+    return(tibble::tibble(
+      patient_id = character(0), as_of = character(0),
+      p_24h = numeric(0), p_7d = numeric(0), tier_7d = character(0)))
+  }
+  res <- DBI::dbGetQuery(con,
+    "SELECT patient_id, as_of, p_24h, p_7d, tier_7d
+       FROM risk_snapshots WHERE as_of = ?;",
+    params = list(as_of$as_of[1]))
+  tibble::as_tibble(res)
+}
+
+#' Insert an alert row (P0-1)
+#'
+#' @param con A DBI connection.
+#' @param patient_id Patient identifier.
+#' @param kind Alert category (e.g. "risk_jump", "tier_up").
+#' @param severity One of "info", "warning", "critical".
+#' @param delta_pts Signed change in 7-day risk (percentage points).
+#' @param reason_text One-line human-readable reason.
+#' @return Invisibly the new `alert_id`.
+#' @export
+cdt_insert_alert <- function(con, patient_id, kind, severity,
+                             delta_pts = NA_real_, reason_text = NULL) {
+  stopifnot(nzchar(patient_id), nzchar(kind), nzchar(severity))
+  DBI::dbExecute(con,
+    "INSERT INTO alerts (patient_id, kind, severity, delta_pts, reason_text)
+       VALUES (?, ?, ?, ?, ?);",
+    params = list(patient_id, kind, severity,
+      as.numeric(delta_pts), reason_text %||% NA_character_))
+  id <- DBI::dbGetQuery(con, "SELECT last_insert_rowid() AS id;")$id[1]
+  invisible(as.integer(id))
+}
+
+#' Fetch alerts (P0-1)
+#'
+#' @param con A DBI connection.
+#' @param only_open If `TRUE`, return only un-acknowledged alerts.
+#' @return A tibble of alerts, newest first.
+#' @export
+cdt_get_alerts <- function(con, only_open = FALSE) {
+  q <- "SELECT * FROM alerts"
+  if (isTRUE(only_open)) q <- paste(q, "WHERE acknowledged_at IS NULL")
+  q <- paste(q, "ORDER BY created_at DESC, alert_id DESC;")
+  tibble::as_tibble(DBI::dbGetQuery(con, q))
+}
+
+#' Acknowledge an alert (P0-1)
+#'
+#' Stamps the acknowledgement audit fields. Re-acknowledging overwrites the
+#' stamp with the latest actor/time.
+#'
+#' @param con A DBI connection.
+#' @param alert_id Alert identifier.
+#' @param acknowledged_by Optional user identifier.
+#' @return Invisibly `TRUE`.
+#' @export
+cdt_ack_alert <- function(con, alert_id, acknowledged_by = NULL) {
+  DBI::dbExecute(con,
+    "UPDATE alerts
+        SET acknowledged_by = ?, acknowledged_at = datetime('now')
+      WHERE alert_id = ?;",
+    params = list(acknowledged_by %||% NA_character_, as.integer(alert_id)))
+  invisible(TRUE)
 }

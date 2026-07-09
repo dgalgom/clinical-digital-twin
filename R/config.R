@@ -107,6 +107,29 @@ cdt_risk_cutoffs <- function() {
   c(moderate = 0.15, high = 0.35)
 }
 
+#' Shift-triage alert configuration (P0-1)
+#'
+#' Change-detection thresholds for [cdt_compute_alerts()]. Modelled on the
+#' human-digital-twin `AlarmDetector` shape: a threshold, a direction, and a
+#' severity mapping, all data-driven rather than hardcoded in the detector.
+#'
+#' * `jump_pts` - minimum rise in 7-day risk (percentage points) to fire a
+#'   "risk_jump" alert.
+#' * `warning_pts` / `critical_pts` - severity cut-offs on the absolute jump.
+#' * `tier_up_severity` - severity assigned when a patient crosses up a risk
+#'   tier (Low->Moderate->High), independent of the point jump.
+#'
+#' @return A named list of alert-configuration values.
+#' @export
+cdt_alert_config <- function() {
+  list(
+    jump_pts         = 8,
+    warning_pts      = 8,
+    critical_pts     = 15,
+    tier_up_severity = "warning"
+  )
+}
+
 #' Map a probability to a risk tier label
 #'
 #' @param p Numeric vector of probabilities in `[0, 1]`.

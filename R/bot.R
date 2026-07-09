@@ -437,7 +437,7 @@ cdt_bot_commands <- function() {
       "Current 24h/7d fall risk for a patient (numbers only)",
       "Functional/fall-history chart for a patient",
       "Simulate a what-if scenario and show baseline vs simulated risk",
-      "Top patients by 7-day fall risk (worklist)",
+      "Patients who changed since last snapshot ('/triage all' = full worklist)",
       "Top model drivers for a patient (why risk is what it is)",
       "Plain-language explanation of the model and its limits",
       "Open the patient in the web dashboard (deep link)"
@@ -569,22 +569,56 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
 
   # --- Cohort-level command (no single patient needed) ----------------------
   if (!is.null(cmd) && cmd$cmd == "triage") {
-    n <- suppressWarnings(as.integer(gsub("\\D", "", cmd$rest)))
+    rest <- tolower(trimws(cmd$rest %||% ""))
+    n <- suppressWarnings(as.integer(gsub("\\D", "", rest)))
     if (is.na(n) || n <= 0) n <- 5L
+
     snap <- cdt_cohort_snapshot(con, model)
     if (nrow(snap) == 0) {
       return(list(text = "No patients in the (synthetic) database.", photo = NULL))
     }
+
+    # "/triage all" (or "/triage absolute") keeps the classic absolute worklist.
+    want_absolute <- grepl("\\ball\\b|\\babsolute\\b", rest)
+    if (!want_absolute) {
+      # Default: the shift-change view - who *moved* since the last snapshot.
+      # Read the currently open (un-acknowledged) alerts; this is populated by
+      # the dashboard's shift-triage refresh. Read-only here (no snapshotting).
+      alerts <- tryCatch(cdt_get_alerts(con, only_open = TRUE),
+        error = function(e) NULL)
+      if (!is.null(alerts) && nrow(alerts) > 0) {
+        top <- utils::head(alerts, n)
+        sev_tag <- c(critical = "\U0001F534", warning = "\U0001F7E0",
+          info = "\U0001F535")
+        rows <- sprintf("%d. %s %s \u2014 %s",
+          seq_len(nrow(top)),
+          vapply(top$severity, function(s) sev_tag[[s]] %||% "", character(1)),
+          top$patient_id, top$reason_text)
+        return(list(text = paste(c(
+          sprintf("Shift triage \u2014 %d patient(s) changed since last snapshot:",
+            nrow(top)),
+          rows,
+          "",
+          "(Use /triage all for the full risk-ranked worklist.)"
+        ), collapse = "\n"), photo = NULL))
+      }
+      # No open alerts: say so, then fall through to the absolute worklist so
+      # the clinician still gets a useful answer.
+    }
+
     top <- utils::head(snap, n)
     rows <- sprintf(
       "%d. %s \u2014 7d=%.1f%% (%s), 24h=%.1f%% (%s)",
       seq_len(nrow(top)), top$patient_id,
       100 * top$p_7d, top$tier_7d, 100 * top$p_24h, top$tier_24h
     )
-    return(list(text = paste(
-      c(sprintf("Top %d patients by 7-day fall risk:", nrow(top)), rows),
-      collapse = "\n"
-    ), photo = NULL))
+    header <- if (want_absolute) {
+      sprintf("Top %d patients by 7-day fall risk:", nrow(top))
+    } else {
+      sprintf("No new movement since the last snapshot. Top %d by 7-day risk:",
+        nrow(top))
+    }
+    return(list(text = paste(c(header, rows), collapse = "\n"), photo = NULL))
   }
 
   pid <- cdt_bot_extract_patient(text)

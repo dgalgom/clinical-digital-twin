@@ -126,5 +126,25 @@ cdt_save_model(model, cdt_model_path())
 print(model)
 message("  Model saved: ", cdt_model_path())
 
+# --- 7. Seed a "previous shift" risk snapshot (P0-1) ----------------------
+# So the shift-triage view shows movement on first launch, store a snapshot of
+# a slightly-lower "yesterday" risk. Deterministic under the fixed seed. The
+# perturbation is a demo device only: it seeds the *snapshot history*, never the
+# model, data, or fall labels, so the statistical checkpoint is untouched.
+message("Seeding a 'previous shift' risk snapshot for the triage demo...")
+snap_now <- cdt_cohort_snapshot(con, model)
+if (nrow(snap_now) > 0) {
+  set.seed(11)
+  prev <- snap_now
+  # Pull each patient's risk down by a small random amount so today's
+  # re-snapshot registers upward movement for a handful of patients.
+  prev$p_7d <- pmax(prev$p_7d - stats::runif(nrow(prev), 0, 0.12), 0)
+  prev$p_24h <- pmax(prev$p_24h - stats::runif(nrow(prev), 0, 0.05), 0)
+  prev$tier_7d <- as.character(cdt_risk_tier(prev$p_7d))
+  cdt_write_risk_snapshot(con, prev, as_of = "previous shift")
+  message(sprintf("  Seeded previous-shift snapshot for %d patients.",
+    nrow(prev)))
+}
+
 dbDisconnect(con)
 message("\nDone. Demo dataset + model are ready.")

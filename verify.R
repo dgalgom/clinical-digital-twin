@@ -120,10 +120,24 @@ reply <- cdt_bot_handle_message(con, model, chat_id = 999,
 if (!nzchar(reply)) fail("bot returned an empty reply")
 ok(sprintf("bot replied (%d chars) in deterministic mock mode", nchar(reply)))
 
+# --- 7. Shift-triage change detection (P0-1) ------------------------------
+step(7, "Detecting shift-triage change alerts")
+# Read-only pass (write_snapshot = FALSE) so verification never mutates the
+# demo DB's snapshot history. The data-raw seeder plants a "previous shift"
+# snapshot, so a fresh build should surface at least one movement alert.
+fired <- tryCatch(
+  cdt_compute_alerts(con, model, as_of = "verify", write_snapshot = FALSE),
+  error = function(e) {
+    fail(sprintf("cdt_compute_alerts errored: %s", conditionMessage(e)))
+  })
+n_prev <- nrow(cdt_get_last_snapshot(con))
+ok(sprintf("compared against last snapshot (%d rows); %d change alert(s) detected",
+  n_prev, nrow(fired)))
+
 try(DBI::dbDisconnect(con), silent = TRUE)
 
-# --- 7. Statistical-adequacy checkpoint -----------------------------------
-step(7, "Running the statistical-adequacy checkpoint")
+# --- 8. Statistical-adequacy checkpoint -----------------------------------
+step(8, "Running the statistical-adequacy checkpoint")
 eval_script <- file.path(root, "checkpoints", "evaluate_model.R")
 rc <- system2("Rscript", eval_script, stdout = FALSE, stderr = FALSE,
   env = sprintf("CDT_PROJECT_ROOT=%s", root))

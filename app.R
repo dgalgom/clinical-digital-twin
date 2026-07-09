@@ -118,6 +118,21 @@ dashboard_ui <- function() {
     tabsetPanel(
       id = "tabs",
       tabPanel(
+        "Shift triage",
+        br(),
+        p(paste("Who changed since the last snapshot? This surfaces movement",
+          "(risk jumps and tier crossings), not the same frail patients every",
+          "day - the question a nurse actually asks at handover.")),
+        fluidRow(
+          column(5, actionButton("refresh_alerts",
+            "Re-snapshot & detect changes", class = "btn-primary")),
+          column(7, div(style = "padding-top:6px;color:#8b98a5;",
+            textOutput("alerts_status", inline = TRUE)))
+        ),
+        br(),
+        uiOutput("alerts_list")
+      ),
+      tabPanel(
         "Cohort overview",
         br(),
         fluidRow(
@@ -251,6 +266,77 @@ server <- function(input, output, session) {
       snap$patient_id, snap$sex, snap$age, snap$tier_7d)
     updateSelectInput(session, "sel_patient",
       choices = setNames(snap$patient_id, labels))
+  })
+
+  # --- Shift triage (P0-1) -------------------------------------------------
+  # `alerts_refresh` is bumped after a re-snapshot or an acknowledgement so the
+  # alert list re-renders. Colours mirror severity, not absolute risk.
+  alerts_refresh <- reactiveVal(0)
+  SEVERITY_COLORS <- c(info = "#3d8bfd", warning = "#f9a825", critical = "#c62828")
+
+  open_alerts <- reactive({
+    req(auth())
+    alerts_refresh()
+    cdt_get_alerts(con, only_open = TRUE)
+  })
+
+  # Clinician-initiated: snapshot current risk and detect movement vs. the last
+  # stored snapshot. Never runs automatically (a button, like the intervention
+  # log) so the demo stays deterministic and the action is a human decision.
+  observeEvent(input$refresh_alerts, {
+    req(auth())
+    fired <- tryCatch(
+      cdt_compute_alerts(con, model, as_of = as.character(Sys.time())),
+      error = function(e) NULL)
+    alerts_refresh(alerts_refresh() + 1)
+    output$alerts_status <- renderText({
+      if (is.null(fired)) "Could not compute alerts." else
+        sprintf("Snapshot taken. %d new change alert(s) detected.", nrow(fired))
+    })
+  })
+
+  observeEvent(input$ack_alert, {
+    req(auth())
+    cdt_ack_alert(con, as.integer(input$ack_alert),
+      acknowledged_by = auth()$username %||% "clinician")
+    alerts_refresh(alerts_refresh() + 1)
+  })
+
+  output$alerts_list <- renderUI({
+    req(auth())
+    al <- open_alerts()
+    if (nrow(al) == 0) {
+      return(p(style = "color:#8b98a5;",
+        paste("No open change alerts. Click \u201cRe-snapshot & detect",
+          "changes\u201d to compare current risk against the last snapshot.")))
+    }
+    # Acknowledge buttons post their alert_id back via a tiny JS shim so a single
+    # observer handles all rows.
+    ack_js <- "Shiny.setInputValue('ack_alert', %d, {priority:'event'});"
+    cards <- lapply(seq_len(nrow(al)), function(i) {
+      col <- SEVERITY_COLORS[[al$severity[i]]] %||% "#8b98a5"
+      div(style = sprintf(
+        "margin:6px 0;padding:10px 14px;border-left:4px solid %s;background:%s;border-radius:6px;",
+        col, CDT_PANEL),
+        fluidRow(
+          column(9,
+            div(style = "font-weight:600;",
+              al$patient_id[i], "  ",
+              span(style = sprintf(
+                "font-size:11px;color:%s;text-transform:uppercase;", col),
+                al$severity[i])),
+            div(style = "font-size:13px;color:#c9d1d9;", al$reason_text[i])),
+          column(3, div(style = "text-align:right;",
+            tags$button(class = "btn btn-sm btn-outline-light",
+              onclick = sprintf(ack_js, al$alert_id[i]), "Acknowledge")))
+        )
+      )
+    })
+    tagList(
+      p(style = "color:#8b98a5;font-size:12px;",
+        sprintf("%d open alert(s), most recent first.", nrow(al))),
+      div(cards)
+    )
   })
 
   # --- Cohort table --------------------------------------------------------

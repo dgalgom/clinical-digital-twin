@@ -77,14 +77,15 @@ test_that("gated commands require login", {
   expect_match(r$text, "identify yourself", ignore.case = TRUE)
 })
 
-test_that("/triage ranks patients by 7-day risk", {
+test_that("/triage all ranks patients by 7-day risk", {
   fx <- make_test_fixtures()
   con <- .cmd_seeded_con(fx)
   on.exit(DBI::dbDisconnect(con))
   cdt_bot_reset()
   .cmd_login(con, fx$model, "cT")
 
-  r <- cdt_bot_reply(con, fx$model, "cT", "/triage 3", llm_mock = TRUE)
+  # "all" forces the classic absolute worklist (delta view is the new default).
+  r <- cdt_bot_reply(con, fx$model, "cT", "/triage all 3", llm_mock = TRUE)
   expect_match(r$text, "Top 3 patients")
   # Three ranked lines.
   expect_equal(length(gregexpr("7d=", r$text)[[1]]), 3)
@@ -93,6 +94,28 @@ test_that("/triage ranks patients by 7-day risk", {
   # Ranking is monotonically non-increasing in 7-day risk.
   snap <- cdt_cohort_snapshot(con, fx$model)
   expect_true(all(diff(head(snap$p_7d, 5)) <= 1e-9))
+})
+
+test_that("/triage (default) shows the change view; no movement -> falls back", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  .cmd_login(con, fx$model, "cT")
+
+  # No snapshot/alerts yet -> graceful fallback to the absolute worklist.
+  r0 <- cdt_bot_reply(con, fx$model, "cT", "/triage", llm_mock = TRUE)
+  expect_match(r0$text, "No new movement", ignore.case = TRUE)
+
+  # Seed a lower "previous" snapshot so deltas fire, then re-run.
+  snap <- cdt_cohort_snapshot(con, fx$model)
+  snap$p_7d <- pmax(snap$p_7d - 0.25, 0)
+  snap$tier_7d <- as.character(cdt_risk_tier(snap$p_7d))
+  cdt_write_risk_snapshot(con, snap, as_of = "prev")
+  cdt_compute_alerts(con, fx$model, as_of = "now")
+
+  r1 <- cdt_bot_reply(con, fx$model, "cT", "/triage", llm_mock = TRUE)
+  expect_match(r1$text, "changed since last snapshot", ignore.case = TRUE)
 })
 
 test_that("/risk returns numbers only for the focus/explicit patient", {
