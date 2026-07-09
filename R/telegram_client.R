@@ -69,6 +69,43 @@ cdt_telegram_send <- function(chat_id, text, mock = NULL) {
   invisible(httr2::resp_status(resp) < 400)
 }
 
+#' Show a "typing..." chat action in a Telegram chat
+#'
+#' Sends `sendChatAction` with action `typing`, which makes Telegram display the
+#' bot's "typing..." status for a few seconds. This is a pure UX cue used to
+#' mask model latency while a reply is being generated; it never blocks and its
+#' failure is non-fatal (the reply is sent regardless). In mock mode the call is
+#' captured in the same in-memory sink as `list(type = "action", chat_id,
+#' action)` so the webhook path can be exercised offline.
+#'
+#' @param chat_id Target chat id.
+#' @param action Chat action string (default `"typing"`).
+#' @param mock Optional explicit mock override.
+#' @return Invisibly `TRUE` on success (or capture in mock mode), `FALSE` on a
+#'   transport error.
+#' @export
+cdt_telegram_typing <- function(chat_id, action = "typing", mock = NULL) {
+  if (cdt_telegram_is_mock(mock)) {
+    .cdt_tg_env$sent <- c(
+      .cdt_tg_env$sent,
+      list(list(type = "action", chat_id = chat_id, action = action))
+    )
+    return(invisible(TRUE))
+  }
+
+  token <- Sys.getenv("TELEGRAM_BOT_TOKEN")
+  url <- sprintf("https://api.telegram.org/bot%s/sendChatAction", token)
+  resp <- tryCatch(
+    httr2::request(url) |>
+      httr2::req_body_json(list(chat_id = chat_id, action = action)) |>
+      httr2::req_timeout(10) |>
+      httr2::req_error(is_error = function(r) FALSE) |>
+      httr2::req_perform(),
+    error = function(e) NULL
+  )
+  invisible(!is.null(resp) && httr2::resp_status(resp) < 400)
+}
+
 #' Send a photo (PNG) to a Telegram chat via `sendPhoto`
 #'
 #' Uploads a local image file as multipart/form-data. In mock mode the send is

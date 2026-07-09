@@ -13,6 +13,13 @@
 # NEVER commit a real key. Put the real value in .Renviron (git-ignored) only.
 ANTHROPIC_API_KEY=
 
+# Optional low-latency backend. Groq's Llama 3.3 70B answers in ~0.3-0.8s vs
+# Claude's ~2-5s, which noticeably speeds up the Telegram bot. If GROQ_API_KEY
+# is set (and CDT_LLM_BACKEND is not forced to "claude"), the bot uses Groq
+# automatically; otherwise it uses Claude. Get a key at console.groq.com.
+# NEVER commit a real key. Put the real value in .Renviron (git-ignored) only.
+GROQ_API_KEY=
+
 # Enables live Telegram sends. If unset, outgoing messages are captured
 # in-memory (MOCK mode) so the webhook logic can be tested offline.
 # Set this (from BotFather) to run the bot locally with no public URL:
@@ -30,6 +37,10 @@ TELEGRAM_WEBHOOK_SECRET=
 
 # Optional overrides (sensible defaults exist for all of these):
 # CDT_CLAUDE_MODEL=claude-sonnet-4-6
+# Force which LLM backend the bot uses ("claude" or "groq"); default is "groq"
+# when GROQ_API_KEY is set, else "claude".
+# CDT_LLM_BACKEND=groq
+# CDT_GROQ_MODEL=llama-3.3-70b-versatile
 # CDT_API_HOST=127.0.0.1
 # CDT_API_PORT=8000
 # CDT_DB_PATH=./data/clinical_twin.sqlite

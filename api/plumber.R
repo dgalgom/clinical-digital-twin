@@ -183,6 +183,10 @@ function(req, res) {
   chat_id <- update$message$chat$id
   text <- update$message$text %||% ""
 
+  # Show "typing..." while the (possibly LLM-backed) reply is generated. This is
+  # a pure UX cue to mask model latency; it is non-fatal and never blocks.
+  cdt_telegram_typing(chat_id)
+
   reply <- cdt_bot_reply(.api_con, .api_model, chat_id, text)
   cdt_telegram_send(chat_id, reply$text)
   if (!is.null(reply$photo)) {

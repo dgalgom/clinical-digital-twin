@@ -15,6 +15,44 @@ cdt_claude_model <- function() {
   Sys.getenv("CDT_CLAUDE_MODEL", unset = "claude-sonnet-4-6")
 }
 
+#' Which LLM backend the bot should use
+#'
+#' Selects the inference backend for [cdt_claude_reply()]. Motivated by the
+#' Telegram bot's perceived latency: a hosted low-latency backend (Groq's
+#' Llama 3.3 70B, ~0.3-0.8s) is a drop-in alternative to Claude (~2-5s) that
+#' mirrors the sibling human-digital-twin project's `telegram_bot_llama.py`.
+#'
+#' Resolution order:
+#'   1. `CDT_LLM_BACKEND` if set to `"claude"` or `"groq"` (explicit wins).
+#'   2. `"groq"` if a `GROQ_API_KEY` is present (opt-in by credential).
+#'   3. `"claude"` otherwise (the original default).
+#'
+#' The choice only affects the LIVE path; mock mode is backend-agnostic and the
+#' grounded prompt, PII handling, and safe fallbacks are identical either way.
+#'
+#' @return `"claude"` or `"groq"`.
+#' @export
+cdt_llm_backend <- function() {
+  choice <- tolower(Sys.getenv("CDT_LLM_BACKEND", unset = ""))
+  if (choice %in% c("claude", "groq")) {
+    return(choice)
+  }
+  if (nzchar(Sys.getenv("GROQ_API_KEY"))) {
+    return("groq")
+  }
+  "claude"
+}
+
+#' Default Groq model id used by the bot
+#'
+#' Llama 3.3 70B on Groq is fast and inexpensive; override with `CDT_GROQ_MODEL`.
+#'
+#' @return Character scalar model id.
+#' @export
+cdt_groq_model <- function() {
+  Sys.getenv("CDT_GROQ_MODEL", unset = "llama-3.3-70b-versatile")
+}
+
 #' Is the client running in mock mode?
 #'
 #' @param mock Explicit override; if non-NULL it wins.
@@ -26,6 +64,11 @@ cdt_llm_is_mock <- function(mock = NULL) {
   }
   if (identical(Sys.getenv("CDT_MOCK_LLM"), "1")) {
     return(TRUE)
+  }
+  # Live only if the SELECTED backend has a usable key; otherwise fall back to
+  # the deterministic mock so the bot always answers offline.
+  if (identical(cdt_llm_backend(), "groq")) {
+    return(!nzchar(Sys.getenv("GROQ_API_KEY")))
   }
   !nzchar(Sys.getenv("ANTHROPIC_API_KEY"))
 }
@@ -71,12 +114,29 @@ cdt_claude_reply <- function(user_message,
                              max_tokens = 400) {
   if (is.null(system_prompt)) {
     system_prompt <- paste(
-      "You are a clinical decision-support assistant for a fall-risk digital",
-      "twin prototype. ALL patient data is synthetic. Use ONLY the facts in the",
-      "provided context block; never invent clinical values, diagnoses, or risk",
-      "numbers. Be concise (2-5 sentences), use the risk tier language",
-      "(Low/Moderate/High), and note when a what-if simulation changed risk.",
-      "If the context lacks the answer, say so plainly."
+      "You are a trusted clinical colleague helping nursing-home staff make",
+      "sense of fall-risk for a specific patient. Talk like a sharp, caring",
+      "clinician briefing a peer at the bedside: warm, direct, and human -- not",
+      "a form letter or a bulleted robot.",
+      "",
+      "How to answer:",
+      "- Lead with the bottom line in the first sentence (the risk tier and what",
+      "  it means for this shift), then give the one or two reasons that matter.",
+      "- Use plain, confident language a busy nurse can act on. Prefer 'her",
+      "  activity has been dropping' over 'steps_mean_7d exhibits a negative",
+      "  trend'. No jargon dumps, no restating every number.",
+      "- Keep it tight: 2-5 sentences. Sound like a person, not a template.",
+      "- When a what-if changed the risk, say so plainly and in human terms",
+      "  ('getting her walking a bit more would pull the 7-day risk down').",
+      "",
+      "Hard rules (never break):",
+      "- ALL patient data is synthetic. Use ONLY the facts in the context block;",
+      "  never invent clinical values, diagnoses, medications, or risk numbers.",
+      "- Refer to the patient by their coded id (e.g. 'P042') or as 'the",
+      "  patient'/'she'/'he'; you are never given a name and must never guess one.",
+      "- Use the risk tier language (Low/Moderate/High) for the headline.",
+      "- If the context doesn't contain the answer, say so plainly rather than",
+      "  guessing."
     )
   }
 
@@ -93,7 +153,18 @@ cdt_claude_reply <- function(user_message,
     return(.cdt_mock_reply(system_prompt, user_message, context))
   }
 
-  # --- Live call (requires httr2 + ANTHROPIC_API_KEY) ---------------------
+  # --- Live call: dispatch to the selected backend -------------------------
+  # Both backends receive the identical grounded prompt and PII-safe context;
+  # only the transport (endpoint + auth + response shape) differs. Groq's
+  # Llama 3.3 70B is a low-latency alternative to Claude for the Telegram bot.
+  if (identical(cdt_llm_backend(), "groq")) {
+    return(.cdt_groq_call(system_prompt, grounded_user, max_tokens))
+  }
+  .cdt_claude_call(system_prompt, grounded_user, max_tokens)
+}
+
+# Live Anthropic Messages API call. Returns reply text or a safe error string.
+.cdt_claude_call <- function(system_prompt, grounded_user, max_tokens) {
   key <- Sys.getenv("ANTHROPIC_API_KEY")
   body <- list(
     model = cdt_claude_model(),
@@ -122,6 +193,46 @@ cdt_claude_reply <- function(user_message,
   }
   parsed <- httr2::resp_body_json(resp)
   txt <- tryCatch(parsed$content[[1]]$text, error = function(e) NULL)
+  if (is.null(txt)) {
+    return("[LLM error] Unexpected response format.")
+  }
+  txt
+}
+
+# Live Groq (OpenAI-compatible chat completions) call. Groq maps the system
+# prompt to a `system` message and the grounded prompt to a `user` message.
+# Returns reply text or a safe error string, mirroring the Claude path so the
+# bot's error handling is identical regardless of backend.
+.cdt_groq_call <- function(system_prompt, grounded_user, max_tokens) {
+  key <- Sys.getenv("GROQ_API_KEY")
+  body <- list(
+    model = cdt_groq_model(),
+    max_tokens = max_tokens,
+    messages = list(
+      list(role = "system", content = system_prompt),
+      list(role = "user", content = grounded_user)
+    )
+  )
+
+  resp <- httr2::request("https://api.groq.com/openai/v1/chat/completions") |>
+    httr2::req_headers(
+      "Authorization" = paste("Bearer", key),
+      "content-type" = "application/json"
+    ) |>
+    httr2::req_body_json(body) |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(r) FALSE) |>
+    httr2::req_perform()
+
+  status <- httr2::resp_status(resp)
+  if (status >= 400) {
+    return(sprintf(
+      "[LLM error %d] Could not generate a summary. Underlying data is still available in the dashboard.",
+      status
+    ))
+  }
+  parsed <- httr2::resp_body_json(resp)
+  txt <- tryCatch(parsed$choices[[1]]$message$content, error = function(e) NULL)
   if (is.null(txt)) {
     return("[LLM error] Unexpected response format.")
   }

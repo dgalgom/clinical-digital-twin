@@ -152,11 +152,21 @@ Copy `.Renviron.example` to `.Renviron` (git-ignored) and fill in as needed.
 | Variable             | Purpose                                    | If unset            |
 |----------------------|--------------------------------------------|---------------------|
 | `ANTHROPIC_API_KEY`  | Live Claude replies for the bot            | Bot uses mock mode  |
+| `GROQ_API_KEY`       | Low-latency bot backend (Llama 3.3 70B)    | Uses Claude/mock    |
+| `CDT_LLM_BACKEND`    | Force `claude` or `groq`                    | `groq` if key set   |
 | `TELEGRAM_BOT_TOKEN` | Live Telegram message sending              | Sends captured (mock)|
 | `CDT_CLAUDE_MODEL`   | Override model id (`claude-sonnet-4-6`)    | Default used        |
+| `CDT_GROQ_MODEL`     | Override Groq model (`llama-3.3-70b-...`)   | Default used        |
 | `CDT_API_HOST/PORT`  | API bind address                           | `127.0.0.1:8000`    |
 | `CDT_MOCK_LLM=1`     | Force LLM mock mode                        | —                   |
 | `CDT_MOCK_TELEGRAM=1`| Force Telegram mock mode                   | —                   |
+
+The Telegram bot supports two interchangeable LLM backends behind one grounded,
+PII-safe prompt: **Claude** (default) and **Groq / Llama 3.3 70B** for lower
+latency (~0.3–0.8 s vs ~2–5 s). Set `GROQ_API_KEY` to opt in automatically, or
+pin `CDT_LLM_BACKEND`. The webhook also emits a Telegram *"typing…"* action
+while the reply is generated. Either backend degrades to the deterministic mock
+when its key is absent.
 
 ---
 
