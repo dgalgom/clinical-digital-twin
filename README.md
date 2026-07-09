@@ -208,17 +208,36 @@ curl -s -X POST "http://127.0.0.1:8000/predict" \
 
 ### 3. Telegram bot
 
-The bot is served by the plumber webhook `POST /telegram/webhook`. To connect a
-real bot, expose the API publicly (e.g. `ngrok http 8000`) and register the
-webhook:
+The recommended way to run the bot is **long-polling** — no public URL, no
+webhook. One process (`api/run_bot_poll.R`) opens a single outbound HTTPS
+connection and consumes updates, feeding them to the same dispatcher the webhook
+uses. First, run the one-off setup to publish the command menu + descriptions
+and clear any stale webhook/queued updates, then start the poller:
 
 ```bash
-curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=https://<public-host>/telegram/webhook"
+Rscript api/setup_telegram.R     # setMyCommands + setMyDescription + deleteWebhook
+Rscript api/run_bot_poll.R       # start the bot (long-polling); Ctrl-C to stop
 ```
 
-Then message the bot: *"How is patient P048 trending?"* or *"What if we increase
-P048's mobility by 25%?"*. **Without keys**, run the offline integration check to
-see the same logic in mock mode:
+`api/setup_telegram.R` is idempotent and safe to re-run. It registers the folded
+**menu** button (sourced from `cdt_bot_commands()`, so the menu and `/help` never
+drift), sets the empty-chat **description**, and calls `deleteWebhook` with
+`drop_pending_updates=TRUE` so a fresh poller starts clean (Telegram allows
+*either* a webhook *or* `getUpdates`, never both — a leftover webhook makes
+`getUpdates` return HTTP 409).
+
+With `GROQ_API_KEY` set the bot answers via Groq's Llama 3.3 70B (~0.3–0.8 s);
+otherwise it uses Claude, and with no key at all it falls back to deterministic
+mock replies. Then message the bot: *"How is patient P048 trending?"* or *"What
+if we increase P048's mobility by 25%?"*.
+
+> **Webhook route (future):** an always-on hosted deployment can serve the
+> plumber webhook `POST /telegram/webhook` behind a public HTTPS URL and register
+> it with `setWebhook`. That path is intentionally **not wired yet** — see the
+> `setup_webhook = FALSE` placeholder in `api/setup_telegram.R`.
+
+**Without keys**, run the offline integration check to see the same logic in mock
+mode:
 
 ```bash
 Rscript tests/integration_check.R

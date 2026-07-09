@@ -27,15 +27,25 @@ URL, tunnel, or hosting is required — only your machine and a terminal.
 #      CDT_APP_URL=https://dgalgom.shinyapps.io/clinical-digital-twin/
 # 2. Build the synthetic DB + model once:
 Rscript setup.R
-# 3. Start the bot (stays online; Ctrl-C to stop):
+# 3. Register the command menu + description and clear any stale webhook/queue:
+Rscript api/setup_telegram.R
+# 4. Start the bot (stays online; Ctrl-C to stop):
 Rscript api/run_bot_poll.R
 ```
 
-It prints `LLM mode: LIVE Claude` when `ANTHROPIC_API_KEY` is set (else `MOCK`).
-In Telegram: `/start` → `login as clinician` → `How is patient P001 trending?`.
+`api/setup_telegram.R` is a one-off, idempotent SETUP step: it publishes the
+folded **command menu** (`setMyCommands`, sourced from `cdt_bot_commands()`), sets
+the empty-chat **description** (`setMyDescription`), and calls `deleteWebhook`
+with `drop_pending_updates=TRUE` so the poller starts clean. Re-run it any time.
+
+`run_bot_poll.R` prints `LLM mode: LIVE Claude`/`Groq` when a key is set (else
+`MOCK`). With `GROQ_API_KEY` set the bot uses Groq's Llama 3.3 70B (~0.3–0.8 s);
+with only `ANTHROPIC_API_KEY` it uses Claude. In Telegram: `/start` →
+`login as clinician` → `How is patient P001 trending?`.
 
 > **Polling vs webhook are mutually exclusive.** If a webhook was ever registered
-> for this bot, `getUpdates` returns HTTP 409. Clear it first:
+> for this bot, `getUpdates` returns HTTP 409. `api/setup_telegram.R` clears it
+> for you (via `deleteWebhook`); otherwise clear it manually with
 > `curl "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`. Use Part 0 (polling)
 > **or** Parts 2+4 (webhook), not both.
 
