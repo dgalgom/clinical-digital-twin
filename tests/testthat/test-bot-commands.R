@@ -189,3 +189,96 @@ test_that("/dashboard returns a deep link with the patient", {
   expect_match(r$text, pid)
   expect_null(r$photo)
 })
+
+test_that("/dashboard needs no patient: returns the cohort dashboard link", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  .cmd_login(con, fx$model, "cDashCohort")
+
+  # No patient in focus and none named -> cohort-level URL (no ?patient=).
+  r <- cdt_bot_reply(con, fx$model, "cDashCohort", "/dashboard", llm_mock = TRUE)
+  expect_match(r$text, "http")
+  expect_false(grepl("[?]patient=", r$text))
+  expect_null(r$photo)
+})
+
+# --- /panel: cohort fall-risk chart ----------------------------------------
+
+test_that("/panel returns a cohort risk chart (PNG) after login", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  .cmd_login(con, fx$model, "cPanel")
+
+  r <- cdt_bot_reply(con, fx$model, "cPanel", "/panel", llm_mock = TRUE)
+  expect_true(.is_png_cmd(r$photo))
+  # Caption summarizes the cohort and stays honest about synthetic data.
+  expect_match(r$text, "Cohort fall-risk panel")
+  expect_match(r$text, "Synthetic data")
+  unlink(r$photo)
+})
+
+test_that("/panel is gated behind login like other cohort commands", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+
+  r <- cdt_bot_reply(con, fx$model, "cPanelGate", "/panel", llm_mock = TRUE)
+  expect_match(r$text, "identify yourself", ignore.case = TRUE)
+  expect_null(r$photo)
+})
+
+test_that("free-text 'list all patients' returns the coded patient IDs", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  .cmd_login(con, fx$model, "cList")
+
+  r <- cdt_bot_reply(con, fx$model, "cList", "list all patients",
+    llm_mock = TRUE)
+  # Every cohort id appears; the human names never do (coded IDs only).
+  for (pid in fx$cohort$patient_id) expect_match(r$text, pid, fixed = TRUE)
+  for (nm in fx$cohort$name) {
+    if (nzchar(nm)) expect_false(grepl(nm, r$text, fixed = TRUE))
+  }
+  expect_null(r$photo)
+})
+
+# --- deterministic cohort-intent recognizers -------------------------------
+
+test_that("cdt_bot_wants_panel matches cohort phrasing, not patient queries", {
+  expect_true(cdt_bot_wants_panel("/panel"))
+  expect_true(cdt_bot_wants_panel("show me the panel"))
+  expect_true(cdt_bot_wants_panel("cohort risk overview chart"))
+  # A patient-scoped query must fall through to the single-patient pipeline.
+  expect_false(cdt_bot_wants_panel("how is patient P042 trending?"))
+  expect_false(cdt_bot_wants_panel("steps for P004"))
+})
+
+test_that("cdt_bot_wants_patient_list matches roster phrasing, not patient queries", {
+  expect_true(cdt_bot_wants_patient_list("list all patients"))
+  expect_true(cdt_bot_wants_patient_list("which patients do we have?"))
+  expect_true(cdt_bot_wants_patient_list("show the patient roster"))
+  expect_false(cdt_bot_wants_patient_list("how is patient P042 doing?"))
+})
+
+# --- panel renderer (direct) -----------------------------------------------
+
+test_that("cdt_bot_plot_panel renders a PNG and NULLs an empty cohort", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  snap <- cdt_cohort_snapshot(con, fx$model)
+
+  p <- cdt_bot_plot_panel(snap)
+  expect_true(.is_png_cmd(p))
+  unlink(p)
+
+  # Empty snapshot -> NULL (caller falls back to text).
+  expect_null(cdt_bot_plot_panel(snap[0, ]))
+})

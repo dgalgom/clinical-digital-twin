@@ -64,7 +64,7 @@ test_that("bot end-to-end produces a grounded mock reply", {
   # Username gate: unlock the chat before clinical queries.
   gate <- cdt_bot_handle_message(con, fx$model, "chatX", "login as dr_bot",
     llm_mock = TRUE)
-  expect_true(grepl("Signed in", gate))
+  expect_true(grepl("signed in", gate, ignore.case = TRUE))
 
   reply <- cdt_bot_handle_message(con, fx$model, "chatX",
     sprintf("How is patient %s trending?", pid), llm_mock = TRUE)

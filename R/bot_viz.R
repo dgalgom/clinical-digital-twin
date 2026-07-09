@@ -444,3 +444,91 @@ cdt_bot_plot_whatif <- function(risk, patient_id, caption = NULL) {
 
   path
 }
+
+# Map a risk tier name to the palette colour used across the bot charts.
+.cdt_tier_color <- function(tier, th = .cdt_theme()) {
+  cols <- c(Low = th$accent3, Moderate = th$accent2, High = th$marker)
+  out <- unname(cols[as.character(tier)])
+  out[is.na(out)] <- th$muted
+  out
+}
+
+#' Plot a cohort fall-risk panel to PNG (one horizontal bar per patient)
+#'
+#' A ranked overview of the whole cohort: one horizontal bar per patient, length
+#' = predicted 24-hour fall probability, ordered so the highest risk sits on top.
+#' Bars are coloured by the patient's 24-hour risk tier (Low/Moderate/High).
+#' This backs the `/panel` command. It reads a cohort snapshot only (no model
+#' math here) so it stays a pure display helper.
+#'
+#' @param snapshot A cohort snapshot data frame from [cdt_cohort_snapshot()],
+#'   with at least `patient_id`, `p_24h`, and `tier_24h` columns.
+#' @return PNG path, or NULL if there is nothing plottable.
+#' @export
+cdt_bot_plot_panel <- function(snapshot) {
+  if (is.null(snapshot) || nrow(snapshot) == 0 ||
+    is.null(snapshot$p_24h) || all(is.na(snapshot$p_24h))) {
+    return(NULL)
+  }
+
+  # Rank ascending so barplot (which draws bottom-up) puts highest risk on top.
+  ord <- order(snapshot$p_24h, decreasing = FALSE)
+  ids <- as.character(snapshot$patient_id)[ord]
+  vals <- as.numeric(snapshot$p_24h)[ord]
+  tiers <- if (!is.null(snapshot$tier_24h)) {
+    as.character(snapshot$tier_24h)[ord]
+  } else {
+    rep(NA_character_, length(vals))
+  }
+
+  th <- .cdt_theme()
+  # Taller canvas when there are many patients so labels stay legible.
+  n <- length(vals)
+  th$height <- max(560, min(1600, 120 + 34 * n))
+  path <- .cdt_png_open(th)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  bar_cols <- .cdt_tier_color(tiers, th)
+
+  graphics::par(
+    mar = c(4.4, 6.4, 3.6, 2.2), family = th$family,
+    col.axis = th$fg, col.lab = th$fg, fg = th$muted
+  )
+  xmax <- max(c(vals, 0.02), na.rm = TRUE) * 1.16
+
+  bp <- graphics::barplot(
+    vals, horiz = TRUE, col = bar_cols, border = NA,
+    xlim = c(0, xmax), axes = FALSE, names.arg = ids,
+    las = 1, cex.names = if (n > 25) 0.62 else 0.78, space = 0.35
+  )
+  # Gridlines behind, then redraw bars on top for a clean look.
+  xticks <- pretty(c(0, xmax))
+  graphics::abline(v = xticks, col = th$grid, lwd = 1)
+  graphics::barplot(
+    vals, horiz = TRUE, col = bar_cols, border = NA, add = TRUE,
+    xlim = c(0, xmax), axes = FALSE, names.arg = ids, las = 1,
+    cex.names = if (n > 25) 0.62 else 0.78, space = 0.35
+  )
+  graphics::axis(1, at = xticks, labels = sprintf("%.0f%%", xticks * 100),
+    col = th$muted, col.axis = th$fg, cex.axis = 0.8, lwd = 0, lwd.ticks = 1)
+
+  # Value labels at the end of each bar.
+  graphics::text(vals + xmax * 0.012, bp, labels = sprintf("%.1f%%", vals * 100),
+    adj = 0, cex = if (n > 25) 0.6 else 0.72, col = th$fg, xpd = TRUE)
+
+  graphics::title(main = "Cohort fall-risk panel \u2014 predicted 24-hour risk",
+    col.main = th$fg, font.main = 2, cex.main = 1.25, adj = 0, line = 1.9)
+  graphics::mtext(sprintf("%d patients \u00b7 ranked by 24-hour fall probability", n),
+    side = 3, adj = 0, line = 0.5, cex = 0.85, col = th$muted)
+  graphics::title(xlab = "Predicted 24-hour fall risk", line = 2.6)
+
+  # Tier legend + synthetic-data footer.
+  graphics::legend("bottomright",
+    legend = c("Low", "Moderate", "High"),
+    fill = c(th$accent3, th$accent2, th$marker), border = NA, bty = "n",
+    cex = 0.75, text.col = th$fg, horiz = TRUE)
+  graphics::mtext("Synthetic data", side = 1, adj = 1, line = 2.6,
+    cex = 0.7, col = th$muted)
+
+  path
+}

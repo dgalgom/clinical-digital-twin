@@ -401,18 +401,22 @@ cdt_bot_description <- function() {
   paste(
     "Fall-Risk Digital Twin \u2014 Clinical Decision-Support Assistant",
     "",
-    "I help your care team monitor fall risk and reason through care decisions.",
-    "Ask in plain language and I'll surface each patient's current 24-hour and",
-    "7-day fall-risk estimate, chart how their activity, heart rate, blood",
-    "pressure, and sedentary time are trending, and simulate 'what-if' scenarios",
-    "(more activity, less sitting, blood-pressure or medication changes) so you",
-    "can weigh options before acting.",
+    paste(
+      "I help your care team monitor fall risk and reason through care",
+      "decisions. Ask in plain language and I'll surface each patient's current",
+      "24-hour and 7-day fall-risk estimate, chart how their activity, heart",
+      "rate, blood pressure, and sedentary time are trending, and simulate",
+      "'what-if' scenarios (more activity, less sitting, blood-pressure or",
+      "medication changes) so you can weigh options before acting."
+    ),
     "",
-    "Every answer is grounded in the patient's own monitoring data and an",
-    "interpretable risk model \u2014 I won't invent clinical details, and I'll tell",
-    "you plainly when a factor is outside what the model can simulate. I'm a",
-    "decision-support aid, not a substitute for clinical judgment.",
-    "(This demo runs on fully synthetic data.)",
+    paste(
+      "Every answer is grounded in the patient's own monitoring data and an",
+      "interpretable risk model \u2014 I won't invent clinical details, and I'll",
+      "tell you plainly when a factor is outside what the model can simulate.",
+      "I'm a decision-support aid, not a substitute for clinical judgment.",
+      "(This demo runs on fully synthetic data.)"
+    ),
     sep = "\n"
   )
 }
@@ -429,7 +433,7 @@ cdt_bot_commands <- function() {
   data.frame(
     command = c(
       "start", "help", "risk", "history", "whatif",
-      "triage", "drivers", "explain", "dashboard"
+      "triage", "panel", "drivers", "explain", "dashboard"
     ),
     description = c(
       "Greeting and how to get started",
@@ -438,9 +442,10 @@ cdt_bot_commands <- function() {
       "Functional/fall-history chart for a patient",
       "Simulate a what-if scenario and show baseline vs simulated risk",
       "Patients who changed since last snapshot ('/triage all' = full worklist)",
+      "Cohort chart: predicted 24h fall risk for every patient, ranked",
       "Top model drivers for a patient (why risk is what it is)",
       "Plain-language explanation of the model and its limits",
-      "Open the patient in the web dashboard (deep link)"
+      "Open the dashboard (cohort view, or a patient deep link)"
     ),
     stringsAsFactors = FALSE
   )
@@ -469,19 +474,50 @@ cdt_bot_commands <- function() {
   if (!is.null(pid) && nzchar(pid)) paste0(base, "/?patient=", pid) else base
 }
 
+# Deterministic recognizers for the two free-text cohort intents. Both require a
+# cohort-level phrasing that does NOT name a specific patient, so patient-scoped
+# queries still fall through to the single-patient pipeline.
+#
+# "Show me the panel", "cohort risk chart", "risk overview for everyone", ...
+cdt_bot_wants_panel <- function(text) {
+  t <- tolower(text %||% "")
+  if (!is.null(cdt_bot_extract_patient(text))) {
+    return(FALSE)
+  }
+  grepl("\\bpanel\\b", t) ||
+    grepl("(cohort|overall|all patients|everyone|whole ward|all residents).{0,30}(risk|chart|overview|plot|panel)", t) ||
+    grepl("(risk|overview|plot|chart).{0,30}(cohort|all patients|everyone|whole ward|all residents)", t)
+}
+
+# "List all patients", "which patients do we have", "show the roster", ...
+cdt_bot_wants_patient_list <- function(text) {
+  t <- tolower(text %||% "")
+  if (!is.null(cdt_bot_extract_patient(text))) {
+    return(FALSE)
+  }
+  grepl("(list|show|give|display|see).{0,20}(all )?(the )?(patients|patient ids|roster|cohort)", t) ||
+    grepl("(all|which|what|how many).{0,20}patients", t) ||
+    grepl("patient (ids|list|roster)", t)
+}
+
 # A short plain-language model explanation for /explain.
 .cdt_explain_text <- function() {
   paste(
     "How the estimate works:",
-    "A single interpretable logistic model estimates the probability of a fall",
-    "over the next 24 hours and 7 days from static risk factors (e.g. age,",
-    "Parkinson's, osteoporosis, orthostatic hypotension, medications, prior",
-    "falls) and recent wearable trends (steps, resting heart rate, systolic",
-    "blood pressure, sedentary hours, HR variability).",
+    paste(
+      "A single interpretable logistic model estimates the probability of a",
+      "fall over the next 24 hours and 7 days from static risk factors (e.g.",
+      "age, Parkinson's, osteoporosis, orthostatic hypotension, medications,",
+      "prior falls) and recent wearable trends (steps, resting heart rate,",
+      "systolic blood pressure, sedentary hours, HR variability)."
+    ),
     "",
-    "Limits: it is a risk-stratification aid, not a diagnosis. It only knows the",
-    "factors above \u2014 it does NOT model sleep, diet, vision, or home hazards. It",
-    "is trained on synthetic data for this demo and must not drive care alone.",
+    paste(
+      "Limits: it is a risk-stratification aid, not a diagnosis. It only knows",
+      "the factors above \u2014 it does NOT model sleep, diet, vision, or home",
+      "hazards. It is trained on synthetic data for this demo and must not",
+      "drive care alone."
+    ),
     sep = "\n"
   )
 }
@@ -516,13 +552,17 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
   cmd <- .cdt_parse_command(text)
   if (!is.null(cmd) && cmd$cmd == "start") {
     return(list(text = paste(
-      cdt_bot_tagline(),
-      "\nFirst, identify yourself: send 'login as <username>'.",
-      "\nThen try:",
-      "\n- 'How is patient P042 trending?'",
-      "\n- 'What if we increase patient P042's mobility by 25%?'",
-      "\nSend /help for the full command list.",
-      "\n(Synthetic-data demo.)"
+      "Hi there! I'm Claudician, your clinical decision-support assistant.",
+      "I'd be glad to help you keep an eye on your patients' fall risk today.",
+      "",
+      "First, please identify yourself \u2014 just send 'login as <username>' (this is only for authentication; no password needed on this synthetic-data demo).",
+      "",
+      "Then you can try asking things like:",
+      "- How is patient P042 trending?",
+      "- What if we increase patient P042's mobility by 25%?",
+      "",
+      "Send /help any time for the full list of what I can do.",
+      sep = "\n"
     ), photo = NULL))
   }
   if (!is.null(cmd) && cmd$cmd == "help") {
@@ -532,8 +572,10 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
       "Commands:",
       .cdt_commands_help_text(),
       "",
-      "What-if examples: 'more activity 20%', 'sit 2 hours less',",
-      "'lower BP by 10', 'resting HR to 60', 'remove furosemide'.",
+      paste(
+        "What-if examples: 'more activity 20%', 'sit 2 hours less', 'lower BP",
+        "by 10', 'resting HR to 60', 'remove furosemide'."
+      ),
       sep = "\n"
     ), photo = NULL))
   }
@@ -549,25 +591,87 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
   if (!is.null(login_name)) {
     if (cdt_user_exists(con, login_name)) {
       cdt_bot_authed(chat_id, login_name)
-      return(list(text = sprintf(
-        "Signed in as '%s'. Ask about a patient, e.g. 'How is patient P042 trending?'",
-        login_name
+      return(list(text = paste(
+        sprintf("You're signed in as %s \u2014 welcome!", login_name),
+        "You can ask about a specific patient, or open the interactive dashboard for the full picture of your patients.",
+        "Try '/panel' for a fall-risk overview of everyone, or '/help' to see everything I can do.",
+        sep = "\n"
       ), photo = NULL))
     }
-    return(list(text = sprintf(
-      "Unknown username '%s'. Send 'login as <username>' with a valid clinician username.",
-      login_name
+    return(list(text = paste(
+      sprintf("I couldn't find the username '%s'.", login_name),
+      "Please send 'login as <username>' using a valid clinician username to continue.",
+      sep = "\n"
     ), photo = NULL))
   }
 
   if (is.null(cdt_bot_authed(chat_id))) {
     return(list(text = paste(
-      "Please identify yourself first: send 'login as <username>'.",
-      "\n(No password needed here \u2014 this is a synthetic-data demo bot.)"
+      "Before we start, please identify yourself \u2014 just send 'login as <username>'.",
+      "No password needed here; this is a synthetic-data demo.",
+      sep = "\n"
     ), photo = NULL))
   }
 
-  # --- Cohort-level command (no single patient needed) ----------------------
+  # --- Cohort-level commands (no single patient needed) ---------------------
+  # /dashboard opens the web app. With a patient in focus it deep-links to that
+  # patient; otherwise it returns the cohort-level dashboard URL.
+  if (!is.null(cmd) && cmd$cmd == "dashboard") {
+    focus_pid <- cdt_bot_extract_patient(text) %||% cdt_bot_focus(chat_id)
+    if (!is.null(focus_pid) && nzchar(focus_pid)) {
+      cdt_bot_focus(chat_id, focus_pid)
+      return(list(text = paste(
+        sprintf("Here's %s in the interactive dashboard:", focus_pid),
+        .cdt_dashboard_url(focus_pid),
+        sep = "\n"
+      ), photo = NULL))
+    }
+    return(list(text = paste(
+      "Here's the interactive dashboard \u2014 it gives you the full picture across all your patients:",
+      .cdt_dashboard_url(),
+      sep = "\n"
+    ), photo = NULL))
+  }
+
+  # "/panel" (or free-text like "show the panel" / "cohort overview chart"):
+  # a fall-risk overview chart of the whole cohort. Handled before the
+  # single-patient gate since it is inherently cohort-level.
+  if ((!is.null(cmd) && cmd$cmd == "panel") || cdt_bot_wants_panel(text)) {
+    snap <- cdt_cohort_snapshot(con, model)
+    if (nrow(snap) == 0) {
+      return(list(text = "There are no patients in the (synthetic) database yet.",
+        photo = NULL))
+    }
+    photo <- tryCatch(cdt_bot_plot_panel(snap), error = function(e) NULL)
+    n_high <- sum(snap$tier_24h == "High", na.rm = TRUE)
+    caption <- paste(
+      sprintf("Cohort fall-risk panel \u2014 %d patient(s).", nrow(snap)),
+      sprintf("High 24h risk: %d \u00b7 mean 24h: %.1f%%.",
+        n_high, 100 * mean(snap$p_24h, na.rm = TRUE)),
+      "Bars are ordered by predicted 24-hour fall probability. Synthetic data.",
+      sep = "\n"
+    )
+    return(list(text = caption, photo = photo))
+  }
+
+  # "List all patients" (and close variants): return the coded patient IDs so
+  # the clinician can pick one, plus a nudge toward the dashboard/panel.
+  if (cdt_bot_wants_patient_list(text)) {
+    cohort <- cdt_get_cohort(con)
+    if (nrow(cohort) == 0) {
+      return(list(text = "There are no patients in the (synthetic) database yet.",
+        photo = NULL))
+    }
+    ids <- sort(cohort$patient_id)
+    return(list(text = paste(
+      sprintf("Here are the %d patient IDs in the (synthetic) cohort:", length(ids)),
+      paste(ids, collapse = ", "),
+      "",
+      "Ask about any of them (e.g. 'How is P042 trending?'), or send /panel for a cohort risk overview.",
+      sep = "\n"
+    ), photo = NULL))
+  }
+
   if (!is.null(cmd) && cmd$cmd == "triage") {
     rest <- tolower(trimws(cmd$rest %||% ""))
     n <- suppressWarnings(as.integer(gsub("\\D", "", rest)))
@@ -630,7 +734,9 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
 
   if (is.null(pid)) {
     return(list(text = paste(
-      "No patient specified. Mention one, e.g. 'How is patient P042 doing?'"
+      "I'm not sure which patient you mean yet \u2014 just mention one, for example 'How is patient P042 doing?'.",
+      "You can also send 'list all patients' for the full roster, /panel for a cohort risk overview, or /dashboard to open the interactive dashboard.",
+      sep = "\n"
     ), photo = NULL))
   }
 
@@ -646,11 +752,6 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
   if (!is.null(cmd) && cmd$cmd == "risk") {
     r <- cdt_patient_risk(con, model, pid)
     return(list(text = .cdt_risk_line(pid, r), photo = NULL))
-  }
-  if (!is.null(cmd) && cmd$cmd == "dashboard") {
-    return(list(text = sprintf(
-      "Open %s in the dashboard:\n%s", pid, .cdt_dashboard_url(pid)
-    ), photo = NULL))
   }
   if (!is.null(cmd) && cmd$cmd == "drivers") {
     imp <- utils::head(cdt_feature_importance(model, "7d"), 5)

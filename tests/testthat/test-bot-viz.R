@@ -263,13 +263,13 @@ test_that("bot username gate blocks until a known username is provided", {
   # An unknown username is rejected.
   r1 <- cdt_bot_reply(con, fx$model, "chatGate", "login as nobody",
     llm_mock = TRUE)
-  expect_true(grepl("Unknown username", r1$text))
+  expect_true(grepl("couldn't find the username", r1$text))
   expect_null(cdt_bot_authed("chatGate"))
 
   # A known username unlocks the chat.
   r2 <- cdt_bot_reply(con, fx$model, "chatGate", "login as dr_viz",
     llm_mock = TRUE)
-  expect_true(grepl("Signed in", r2$text))
+  expect_true(grepl("signed in", r2$text, ignore.case = TRUE))
   expect_equal(cdt_bot_authed("chatGate"), "dr_viz")
 
   # Now the clinical query goes through and renders a chart.
