@@ -143,7 +143,10 @@ dashboard_ui <- function() {
         ),
         br(),
         h4("Top contributing factors (7-day model)"),
-        plotlyOutput("plot_importance", height = "260px")
+        plotlyOutput("plot_importance", height = "260px"),
+        br(),
+        h4("Suggested interventions"),
+        uiOutput("driver_interventions")
       ),
       tabPanel(
         "What-if simulator",
@@ -363,6 +366,35 @@ server <- function(input, output, session) {
       layout(xaxis = list(title = "|standardized coefficient|"),
         yaxis = list(title = ""), margin = list(l = 160, t = 10)) %>%
       dark_layout()
+  })
+
+  # Suggested interventions mapped to the top model drivers (P0-2).
+  output$driver_interventions <- renderUI({
+    req(input$sel_patient)
+    di <- cdt_driver_interventions(model, top_n = 3L)
+    if (nrow(di) == 0) {
+      return(p(style = "color:#8b98a5;", "No drivers available."))
+    }
+    urgency_col <- c(routine = "#2e7d32", prompt = "#f9a825", urgent = "#c62828")
+    cards <- lapply(seq_len(nrow(di)), function(i) {
+      col <- urgency_col[[di$urgency[i]]] %||% "#8b98a5"
+      div(style = sprintf(
+        "margin:6px 0;padding:10px 14px;border-left:4px solid %s;background:%s;border-radius:6px;",
+        col, CDT_PANEL),
+        div(style = "font-weight:600;",
+          sprintf("%s  ", di$label[i]),
+          span(style = sprintf("font-size:11px;color:%s;text-transform:uppercase;", col),
+            di$urgency[i])),
+        tags$ul(style = "margin:6px 0 4px 0;",
+          lapply(di$interventions[[i]], function(x) tags$li(x))),
+        div(style = "font-size:12px;color:#8b98a5;", di$evidence_note[i])
+      )
+    })
+    tagList(
+      div(cards),
+      p(style = "font-size:11px;color:#8b98a5;margin-top:8px;",
+        "Illustrative decision-support on synthetic data - not clinical guidance.")
+    )
   })
 
   # --- What-if simulator ---------------------------------------------------

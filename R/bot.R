@@ -622,10 +622,22 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
     imp <- utils::head(cdt_feature_importance(model, "7d"), 5)
     rows <- sprintf("- %s (%+.2f)", imp$feature, imp$coefficient)
     r <- cdt_patient_risk(con, model, pid)
+    # Suggested, evidence-based interventions for the top drivers (P0-2).
+    di <- cdt_driver_interventions(model, top_n = 3L)
+    sugg <- character(0)
+    if (nrow(di) > 0) {
+      sugg <- c("", "Suggested interventions:")
+      for (i in seq_len(nrow(di))) {
+        sugg <- c(sugg, sprintf("* %s (%s):", di$label[i], di$urgency[i]),
+          sprintf("   - %s", di$interventions[[i]]))
+      }
+    }
     return(list(text = paste(c(
       sprintf("Top model drivers for %s (standardized coefficients):", pid),
       rows, "", .cdt_risk_line(pid, r),
-      "(Coefficients are cohort-level model drivers, not patient-specific attributions.)"
+      "(Coefficients are cohort-level model drivers, not patient-specific attributions.)",
+      sugg, "",
+      "(Interventions are illustrative decision-support on synthetic data, not clinical guidance.)"
     ), collapse = "\n"), photo = NULL))
   }
   if (!is.null(cmd) && cmd$cmd == "history") {
