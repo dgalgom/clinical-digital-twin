@@ -27,6 +27,7 @@ cdt_db_connect <- function(path = cdt_db_path()) {
 #' * `patients` - static clinical/demographic data (canonical schema)
 #' * `sensor_readings` - daily-resolution vitals/activity time series
 #' * `fall_events` - simulated ground-truth fall labels
+#' * `interventions` - clinician-logged actions (P0-3 closed loop)
 #'
 #' @param con A DBI connection.
 #' @return Invisibly `TRUE`.
@@ -94,6 +95,21 @@ cdt_db_init_schema <- function(con) {
       FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
     );")
 
+  # Interventions logged by clinicians (P0-3 closed loop): the record of what
+  # was actually done, so the what-if panel leads somewhere and the trend plot
+  # can overlay 'we acted here' markers. `created_at` is when it was logged;
+  # `detail` optionally carries the counterfactual JSON from a logged what-if.
+  DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS interventions (
+      intervention_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id      TEXT NOT NULL,
+      type            TEXT NOT NULL,
+      detail          TEXT,
+      created_by      TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+    );")
+
   # Indexes for the common access patterns (patient timeline, cohort snapshot).
   DBI::dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_sensor_patient_ts
@@ -104,6 +120,9 @@ cdt_db_init_schema <- function(con) {
   DBI::dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_sessions_expires
       ON sessions(expires_at);")
+  DBI::dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_interventions_patient
+      ON interventions(patient_id, created_at);")
 
   invisible(TRUE)
 }
@@ -167,6 +186,63 @@ cdt_get_fall_events <- function(con, patient_id = NULL) {
   } else {
     res <- DBI::dbGetQuery(con,
       "SELECT * FROM fall_events WHERE patient_id = ? ORDER BY ts;",
+      params = list(patient_id)
+    )
+  }
+  tibble::as_tibble(res)
+}
+
+#' Log a clinician-initiated intervention (P0-3 closed loop)
+#'
+#' Records what was actually done for a patient. Never called automatically: the
+#' UI wires this to an explicit clinician action (a button), so the record
+#' reflects a human decision. `detail` may carry a free-text note or the
+#' counterfactual JSON captured from a logged what-if scenario.
+#'
+#' @param con A DBI connection.
+#' @param patient_id Patient identifier.
+#' @param type Short intervention type/category (e.g. "Medication review").
+#' @param detail Optional free-text or JSON detail.
+#' @param created_by Optional user identifier (username/role); unrestricted for
+#'   the MVP demo.
+#' @param created_at Optional ISO timestamp; defaults to the DB `datetime('now')`.
+#' @return Invisibly the new `intervention_id`.
+#' @export
+cdt_log_intervention <- function(con, patient_id, type, detail = NULL,
+                                 created_by = NULL, created_at = NULL) {
+  stopifnot(nzchar(patient_id), nzchar(type))
+  if (is.null(created_at)) {
+    DBI::dbExecute(con,
+      "INSERT INTO interventions (patient_id, type, detail, created_by)
+         VALUES (?, ?, ?, ?);",
+      params = list(patient_id, type,
+        detail %||% NA_character_, created_by %||% NA_character_)
+    )
+  } else {
+    DBI::dbExecute(con,
+      "INSERT INTO interventions (patient_id, type, detail, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?);",
+      params = list(patient_id, type,
+        detail %||% NA_character_, created_by %||% NA_character_, created_at)
+    )
+  }
+  id <- DBI::dbGetQuery(con, "SELECT last_insert_rowid() AS id;")$id[1]
+  invisible(as.integer(id))
+}
+
+#' Fetch logged interventions for one patient (or all if `patient_id` is NULL)
+#'
+#' @param con A DBI connection.
+#' @param patient_id Optional patient identifier.
+#' @return A tibble of interventions ordered by `created_at`.
+#' @export
+cdt_get_interventions <- function(con, patient_id = NULL) {
+  if (is.null(patient_id)) {
+    res <- DBI::dbGetQuery(con,
+      "SELECT * FROM interventions ORDER BY patient_id, created_at;")
+  } else {
+    res <- DBI::dbGetQuery(con,
+      "SELECT * FROM interventions WHERE patient_id = ? ORDER BY created_at;",
       params = list(patient_id)
     )
   }

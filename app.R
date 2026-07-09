@@ -36,6 +36,9 @@ cdt_load_env()
 
 # Shared resources.
 con <- cdt_db_connect()
+# Ensure newer tables (e.g. interventions) exist on databases built before they
+# were added. Idempotent: CREATE TABLE IF NOT EXISTS leaves existing data intact.
+cdt_db_init_schema(con)
 model <- cdt_load_model()
 
 # Risk-tier colors (clinically legible; no chart-junk).
@@ -146,7 +149,28 @@ dashboard_ui <- function() {
         plotlyOutput("plot_importance", height = "260px"),
         br(),
         h4("Suggested interventions"),
-        uiOutput("driver_interventions")
+        uiOutput("driver_interventions"),
+        br(),
+        h4("Log an intervention"),
+        fluidRow(
+          column(4, selectInput("iv_type", "Type", choices = c(
+            "Physiotherapy / mobility referral",
+            "Medication review / deprescribing",
+            "BP medication review",
+            "Toileting schedule / bed-exit precautions",
+            "Increased observation / rounding",
+            "Environmental de-hazarding",
+            "Post-fall huddle follow-up",
+            "Other"
+          ))),
+          column(6, textInput("iv_detail", "Detail (optional)",
+            placeholder = "e.g. referred to PT; review benzodiazepine")),
+          column(2, br(), actionButton("iv_log_btn", "Log", class = "btn-primary"))
+        ),
+        div(style = "color:#7bd88f;", textOutput("iv_log_msg")),
+        br(),
+        h4("Logged interventions"),
+        uiOutput("intervention_log")
       ),
       tabPanel(
         "What-if simulator",
@@ -163,7 +187,12 @@ dashboard_ui <- function() {
           column(8,
             plotlyOutput("plot_whatif", height = "320px"),
             br(),
-            uiOutput("whatif_summary")
+            uiOutput("whatif_summary"),
+            br(),
+            actionButton("wi_log_btn",
+              "Log this scenario as a planned intervention",
+              class = "btn-outline-primary"),
+            div(style = "color:#7bd88f;", textOutput("wi_log_msg"))
           )
         )
       ),
@@ -309,6 +338,17 @@ server <- function(input, output, session) {
     cdt_assemble_features(patient_static(), patient_readings())
   })
 
+  # Logged interventions for the selected patient (P0-3). `iv_refresh` is bumped
+  # after every successful log so dependent outputs (list + plot overlay) update.
+  iv_refresh <- reactiveVal(0)
+  patient_interventions <- reactive({
+    req(input$sel_patient)
+    iv_refresh()
+    iv <- cdt_get_interventions(con, input$sel_patient)
+    if (nrow(iv) > 0) iv$date <- as.Date(substr(iv$created_at, 1, 10))
+    iv
+  })
+
   output$risk_cards <- renderUI({
     req(input$sel_patient)
     r <- predict_fall_risk(model, baseline_features())
@@ -337,8 +377,29 @@ server <- function(input, output, session) {
       dark_layout()
   }
 
-  output$plot_steps <- renderPlotly(
-    line_plot(patient_readings(), "step_count", "Daily steps", "#1565c0", "steps"))
+  # Overlay logged-intervention markers as vertical lines on a time-series plot.
+  add_intervention_markers <- function(p, iv, df, ycol) {
+    if (nrow(iv) == 0) return(p)
+    ymax <- suppressWarnings(max(df[[ycol]], na.rm = TRUE))
+    if (!is.finite(ymax)) return(p)
+    for (i in seq_len(nrow(iv))) {
+      p <- p %>% add_segments(
+        x = iv$date[i], xend = iv$date[i], y = 0, yend = ymax,
+        line = list(color = "#3d8bfd", width = 1, dash = "dot"),
+        hoverinfo = "text",
+        text = paste0(iv$type[i],
+          if (!is.na(iv$detail[i]) && nzchar(iv$detail[i])) paste0(": ", iv$detail[i]) else ""),
+        showlegend = FALSE, inherit = FALSE)
+    }
+    p
+  }
+
+  output$plot_steps <- renderPlotly({
+    df <- patient_readings()
+    p <- line_plot(df, "step_count", "Daily steps (dotted = logged intervention)",
+      "#1565c0", "steps")
+    add_intervention_markers(p, patient_interventions(), df, "step_count")
+  })
   output$plot_hr <- renderPlotly(
     line_plot(patient_readings(), "resting_hr", "Resting heart rate", "#c62828", "bpm"))
   output$plot_bp <- renderPlotly({
@@ -395,6 +456,59 @@ server <- function(input, output, session) {
       p(style = "font-size:11px;color:#8b98a5;margin-top:8px;",
         "Illustrative decision-support on synthetic data - not clinical guidance.")
     )
+  })
+
+  # --- Intervention logging (P0-3 closed loop) -----------------------------
+  # Logging is clinician-initiated (button); unrestricted for the MVP demo.
+  observeEvent(input$iv_log_btn, {
+    req(input$sel_patient, auth())
+    type <- input$iv_type
+    detail <- trimws(input$iv_detail %||% "")
+    cdt_log_intervention(con, input$sel_patient, type,
+      detail = if (nzchar(detail)) detail else NULL,
+      created_by = auth()$username %||% "clinician")
+    updateTextInput(session, "iv_detail", value = "")
+    iv_refresh(iv_refresh() + 1)
+    output$iv_log_msg <- renderText(sprintf("Logged: %s", type))
+  })
+
+  # Log the current what-if scenario as a planned intervention.
+  observeEvent(input$wi_log_btn, {
+    req(input$sel_patient, auth())
+    ov <- whatif_overrides()
+    if (is.null(ov)) {
+      output$wi_log_msg <- renderText("Adjust a slider first, then log the scenario.")
+      return(invisible(NULL))
+    }
+    detail <- jsonlite::toJSON(ov, auto_unbox = TRUE)
+    cdt_log_intervention(con, input$sel_patient,
+      type = "Planned what-if scenario", detail = as.character(detail),
+      created_by = auth()$username %||% "clinician")
+    iv_refresh(iv_refresh() + 1)
+    output$wi_log_msg <- renderText("Scenario logged as a planned intervention.")
+  })
+
+  output$intervention_log <- renderUI({
+    req(input$sel_patient)
+    iv <- patient_interventions()
+    if (nrow(iv) == 0) {
+      return(p(style = "color:#8b98a5;", "No interventions logged yet."))
+    }
+    iv <- iv[order(iv$created_at, decreasing = TRUE), ]
+    rows <- lapply(seq_len(nrow(iv)), function(i) {
+      det <- iv$detail[i]
+      div(style = sprintf(
+        "margin:4px 0;padding:8px 12px;background:%s;border-left:3px solid %s;border-radius:6px;",
+        CDT_PANEL, CDT_ACCENT),
+        div(style = "font-weight:600;", iv$type[i],
+          span(style = "font-weight:400;color:#8b98a5;font-size:12px;",
+            sprintf("  \u00b7 %s \u00b7 %s", iv$date[i], iv$created_by[i] %||% ""))),
+        if (!is.na(det) && nzchar(det)) {
+          div(style = "font-size:12px;color:#c9d1d9;", det)
+        }
+      )
+    })
+    div(rows)
   })
 
   # --- What-if simulator ---------------------------------------------------
