@@ -37,7 +37,7 @@ cdt_load_env()
 # Shared resources.
 con <- cdt_db_connect()
 # Ensure newer tables (e.g. interventions) exist on databases built before they
-# were added. Idempotent: CREATE TABLE IF NOT EXISTS leaves existing data intact.
+Cm# were added. Idempotent: CREATE TABLE IF NOT EXISTS leaves existing data intact.
 cdt_db_init_schema(con)
 model <- cdt_load_model()
 
