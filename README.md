@@ -1,4 +1,4 @@
-# Clinical Digital Twin Monitoring System (Hackathon MVP)
+# Clinical Digital Twin Monitoring System
 
 An end-to-end R system that lets clinicians visualize patient vitals/activity
 data and run **"what-if" simulations on statistical digital twins** to estimate
@@ -10,6 +10,43 @@ fall risk over the next 24 hours and 7 days.
 > **no real PHI**. This is a **hackathon prototype and is NOT for clinical use**,
 > diagnosis, or treatment decisions. The auth layer is an MVP simplification, not
 > production-grade security. See [Known limitations](#known-limitations).
+
+## Why falls, and why this matters
+
+Falls are the single most important safety event clinicians in older-adult
+institutions are asked to watch for. In this population a fall is rarely
+"just a fall": it is a potential inflection point in a resident's health
+trajectory. A single fall can cause a hip fracture or a traumatic brain
+injury, trigger a hospital admission, and set off a downward spiral of
+immobilization, loss of independence, fear of falling, functional decline,
+and death. Because frail older adults have little physiological reserve, the
+adverse events that follow a fall are frequently **devastating and
+irreversible** — which is exactly why early, continuous fall-risk monitoring
+is worth the effort.
+
+The burden at the population scale is enormous:
+
+- **One in four** U.S. adults aged 65+ — over **14 million** people — reports
+  falling each year, producing an estimated **9 million** fall injuries.
+- Within institutions, a typical **100-bed nursing home reports 100–200 falls
+  per year**, and residents average **~2.6 falls per person per year**.
+- Roughly **1,800** nursing-home residents die from fall-related injuries
+  annually; nursing-home residents are ~5% of adults 65+ but ~20% of fall
+  deaths.
+- The financial toll on patients, families, and payers is staggering:
+  U.S. healthcare spending for **non-fatal** falls among older adults reached
+  **~$80 billion in 2020** (most of it borne by Medicare), on top of
+  **~$754 million** for fatal falls — and an individual hip-fracture episode
+  routinely costs a patient and family **tens of thousands of dollars** in
+  acute, rehabilitation, and long-term care.
+
+A tool that helps a clinician see *which residents are trending toward a fall*
+— and simulate *what would move the needle* — targets one of the highest-cost,
+highest-harm problems in geriatric care. Sources:
+[CDC — Facts About Falls](https://www.cdc.gov/falls/data-research/facts-stats/index.html),
+[CDC — Falls in Nursing Homes](https://www.in.gov/health/files/CDC_Falls_in_Nursing_Homes.pdf),
+[Healthcare spending for non-fatal falls, USA (2020)](https://pmc.ncbi.nlm.nih.gov/articles/PMC11445707/),
+[Medical costs of fatal falls](https://pmc.ncbi.nlm.nih.gov/articles/PMC6089380/).
 
 MIT-licensed. All code is original.
 
@@ -40,6 +77,171 @@ MIT-licensed. All code is original.
   trending?"* or *"What if we increase P042's mobility by 25%?"*. The webhook
   grounds a prompt with **real (synthetic) data and model outputs**, calls
   Claude, and replies. Runs in a deterministic **mock mode** with no keys.
+
+**Live demo dashboard:**
+<https://dgalgom.shinyapps.io/clinical-digital-twin/> — demo login
+`clinician` / **`demo1234`**.
+
+---
+
+## How this was built 
+
+This project was **designed, engineered, and refined end-to-end with Claude
+Code** as the primary builder, inside a deliberate human-in-the-loop workflow.
+The following maps our process onto the judging criteria.
+
+### Claude Code as the primary engineer 
+
+Every layer here — the pooled discrete-time logistic digital twin, the feature
+engineering shared between training and inference, the SQLite schema and DBI
+query layer, the Shiny + plotly dashboard, the plumber REST API, the Telegram
+long-polling bot with its grounded/PII-safe prompt and deterministic mock
+fallback, and the full test/verify/checkpoint harness — was written and
+iterated with Claude Code. We pushed well past a "chatbot on top of a CSV":
+
+- Claude Code built a **grounded visualization router** for the bot — a
+  classify → grade → retry loop that maps free-text clinician questions onto a
+  fixed taxonomy of renderable charts, with an offline deterministic fallback
+  so the system is fully demonstrable **without any API key**.
+- It engineered a **de-identification boundary**: the bot answers
+  patient-data questions deterministically from the database (coded patient IDs
+  only) and never sends synthetic names to the LLM.
+- It kept the whole system **reproducible and offline-verifiable** — one
+  `verify.R` command rebuilds data, trains the twin, exercises the API and bot
+  in mock mode, and runs a statistical-adequacy checkpoint.
+
+### A reinforcement loop with a second reasoning model 
+
+To stress-test our own thinking, we ran a **critique-and-improve loop**: at
+milestones we compacted the working context and handed that summary to
+**Fable 5.0**, asking it for *deep, adversarial reasoning* about weaknesses,
+edge cases, and design improvements. Fable 5.0's suggestions were then brought
+back to **Claude Code, which implemented and validated them** — a lightweight
+reinforcement loop where one model reasons about the design and the other
+executes and verifies. Several concrete refinements (tighter what-if
+grounding, the intent taxonomy, de-identification, and chart specificity) came
+out of that loop.
+
+### Validation, double-checking, and discussion 
+
+We did not ship first drafts. The build proceeded as an explicit dialogue
+between the human clinician-owner and Claude Code:
+
+- **Clarify before coding.** Non-trivial features started with the human
+  specifying intent and Claude Code asking targeted questions (which fields,
+  which chart pairings, deterministic vs. LLM, sticky vs. per-message focus)
+  *before* any file was touched.
+- **Verify every change.** Each increment was checked three ways — the
+  `testthat` unit suite, `tests/integration_check.R`, and the end-to-end
+  `verify.R` — and, for charts, by rendering the PNG and **visually
+  inspecting** it before committing.
+- **Statistical adequacy, not just "it runs".** A held-out,
+  patient-level split reports AUC, Brier, a calibration table, coefficient
+  directionality, and per-prediction latency, and the checkpoint **exits
+  non-zero** if any check regresses.
+- **Honest scope.** Where the synthetic data-generating process makes a
+  coefficient sign non-identifiable, we say so in the README and assert only
+  the identifiable directions — craft over a demo-friendly overclaim.
+
+### A working, compelling demo 
+
+The system is **fully functional on synthetic data engineered to mirror the
+characteristics of an older-adult institutional population**: a live deployed
+dashboard, a running Telegram bot a clinician can message, daily cohort triage
+(`/panel`), patient-specific trends and what-if simulation, event alerting, and
+a structured post-fall huddle. See **[Screenshots](#screenshots)** for a guided
+tour.
+
+---
+
+## The digital twin, briefly
+
+`predict_fall_risk(model, feature_row, modified_inputs = NULL)` is the twin. With
+`modified_inputs = NULL` it returns baseline risk; with a named list of
+overrides it returns the counterfactual ("twin") risk. Supported overrides
+include `steps_pct` (relative), `sbp_delta` (absolute mmHg change), and absolute
+overrides for `steps_mean_7d`, `resting_hr_mean_7d`, `sedentary_hours_mean_7d`,
+`polypharmacy`, trends, etc. (see `cdt_apply_overrides`).
+
+**One pooled model, two horizons.** The prediction horizon is a feature
+(`horizon_7d`): scoring a patient with the indicator at 0 gives the 24h risk and
+at 1 gives the 7-day risk. This keeps the twin to a single interpretable object
+with negligible latency — a deliberate accuracy/complexity/latency trade-off
+suited to interactive what-if simulation.
+
+**Interpretability:** logistic regression with standardized predictors means the
+coefficients *are* the explanation. `cdt_feature_importance()` returns them
+ranked by influence; on the demo cohort the top drivers are declining step
+trend, rising resting-HR/sedentary trends, and lower mean steps — clinically
+sensible directions.
+
+> **On the static risk factors.** In the *synthetic* data-generating process,
+> frailty (age, Parkinson's, prior falls, …) influences fall risk **only through**
+> the sensor streams it shifts (fewer steps, higher resting HR, more sedentary
+> time). Once those mediating sensor features are in the model, the static
+> factors carry only confounded residual signal, so their fitted coefficient
+> **signs are not identifiable** and should not be read clinically. The
+> `checkpoints/evaluate_model.R` directionality check therefore asserts only the
+> activity/vitals signs. This is a property of the simulation, not a model bug.
+
+---
+
+## Screenshots
+
+A guided tour of the two clinician-facing surfaces — the **Telegram bot** (a
+clinician's phone) and the **interactive deployed dashboard**. All data shown is
+synthetic.
+
+### Telegram bot
+
+**Figure 1 — Bot landing page.** The assistant's welcome/onboarding screen.
+
+![Telegram bot landing page](screenshots/figure_1_claude.png)
+
+**Figure 2 — `/panel` command.** The daily cohort triage the clinician is
+expected to open every morning: one ranked bar per resident, colored by 24-hour
+fall-risk tier.
+
+![/panel cohort fall-risk chart](screenshots/figure_2_claude.png)
+
+**Figure 3 — Command menu.** The full list of bot commands.
+
+![Bot command list](screenshots/figure_3_claude.png)
+
+**Figure 4 — Fall history + what-if for P041.** The resident with the highest
+predicted fall probability: fall-history chart and a counterfactual simulation.
+
+![Fall history and what-if for P041](screenshots/figure_4_claude.png)
+
+### Interactive dashboard
+
+**Figure 5 — Dashboard landing page.** The login screen for the deployed Shiny
+app. **For the demo, the password is `demo1234`.**
+
+![Dashboard login page](screenshots/figure_5_claude.png)
+
+**Figure 6 — Alerts.** The list of alerts raised when a change/event is detected.
+
+![Detected-event alerts](screenshots/figure_6_claude.png)
+
+**Figure 7 — Post-fall huddle.** The structured information system used to
+capture the details of a fall event.
+
+![Post-fall huddle tab](screenshots/figure_7_claude.png)
+
+**Figure 8 — Patient-specific panel.** A single resident's detail view.
+
+![Patient-specific panel](screenshots/figure_8_claude.png)
+
+**Figure 9 — What-if simulator.** The dashboard's interactive counterfactual
+tab.
+
+![What-if simulator tab](screenshots/figure_9_claude.png)
+
+**Figure 10 — Full dataset.** The searchable table of all patient information
+across the cohort.
+
+![Full patient dataset](screenshots/figure_10_claude.png)
 
 ---
 
@@ -144,29 +346,12 @@ renv::snapshot()  # update the lockfile
 
 `setup.R` will `renv::restore()` automatically if `renv.lock` exists.
 
-### Environment variables
-
-Copy `.Renviron.example` to `.Renviron` (git-ignored) and fill in as needed.
-**Secrets are read only from the environment; nothing is hardcoded.**
-
-| Variable             | Purpose                                    | If unset            |
-|----------------------|--------------------------------------------|---------------------|
-| `ANTHROPIC_API_KEY`  | Live Claude replies for the bot            | Bot uses mock mode  |
-| `GROQ_API_KEY`       | Low-latency bot backend (Llama 3.3 70B)    | Uses Claude/mock    |
-| `CDT_LLM_BACKEND`    | Force `claude` or `groq`                    | `groq` if key set   |
-| `TELEGRAM_BOT_TOKEN` | Live Telegram message sending              | Sends captured (mock)|
-| `CDT_CLAUDE_MODEL`   | Override model id (`claude-sonnet-4-6`)    | Default used        |
-| `CDT_GROQ_MODEL`     | Override Groq model (`llama-3.3-70b-...`)   | Default used        |
-| `CDT_API_HOST/PORT`  | API bind address                           | `127.0.0.1:8000`    |
-| `CDT_MOCK_LLM=1`     | Force LLM mock mode                        | —                   |
-| `CDT_MOCK_TELEGRAM=1`| Force Telegram mock mode                   | —                   |
-
-The Telegram bot supports two interchangeable LLM backends behind one grounded,
-PII-safe prompt: **Claude** (default) and **Groq / Llama 3.3 70B** for lower
-latency (~0.3–0.8 s vs ~2–5 s). Set `GROQ_API_KEY` to opt in automatically, or
-pin `CDT_LLM_BACKEND`. The webhook also emits a Telegram *"typing…"* action
-while the reply is generated. Either backend degrades to the deterministic mock
-when its key is absent.
+> **Secrets** (Claude/Groq/Telegram keys) are read **only from the
+> environment** and never hardcoded; copy `.Renviron.example` to `.Renviron`
+> (git-ignored) to supply them. With no keys at all, the system runs fully in
+> deterministic **mock mode**. The Telegram bot supports two interchangeable,
+> equally-grounded LLM backends — **Claude** (default) and **Groq / Llama 3.3
+> 70B** for lower latency — each degrading to the mock when its key is absent.
 
 ---
 
@@ -275,38 +460,6 @@ signs in the clinically expected direction and **~0.1 ms** per prediction.
 
 ---
 
-## The digital twin, briefly
-
-`predict_fall_risk(model, feature_row, modified_inputs = NULL)` is the twin. With
-`modified_inputs = NULL` it returns baseline risk; with a named list of
-overrides it returns the counterfactual ("twin") risk. Supported overrides
-include `steps_pct` (relative), `sbp_delta` (absolute mmHg change), and absolute
-overrides for `steps_mean_7d`, `resting_hr_mean_7d`, `sedentary_hours_mean_7d`,
-`polypharmacy`, trends, etc. (see `cdt_apply_overrides`).
-
-**One pooled model, two horizons.** The prediction horizon is a feature
-(`horizon_7d`): scoring a patient with the indicator at 0 gives the 24h risk and
-at 1 gives the 7-day risk. This keeps the twin to a single interpretable object
-with negligible latency — a deliberate accuracy/complexity/latency trade-off
-suited to interactive what-if simulation.
-
-**Interpretability:** logistic regression with standardized predictors means the
-coefficients *are* the explanation. `cdt_feature_importance()` returns them
-ranked by influence; on the demo cohort the top drivers are declining step
-trend, rising resting-HR/sedentary trends, and lower mean steps — clinically
-sensible directions.
-
-> **On the static risk factors.** In the *synthetic* data-generating process,
-> frailty (age, Parkinson's, prior falls, …) influences fall risk **only through**
-> the sensor streams it shifts (fewer steps, higher resting HR, more sedentary
-> time). Once those mediating sensor features are in the model, the static
-> factors carry only confounded residual signal, so their fitted coefficient
-> **signs are not identifiable** and should not be read clinically. The
-> `checkpoints/evaluate_model.R` directionality check therefore asserts only the
-> activity/vitals signs. This is a property of the simulation, not a model bug.
-
----
-
 ## Known limitations
 
 - **Synthetic data only.** Distributions are illustrative, not
@@ -346,6 +499,18 @@ sensible directions.
   decision maker.
 - **Model is not calibrated/validated** against real outcomes and reports
   uncalibrated probabilities; risk *tiers* are heuristic cutoffs.
+- **No prospective / external validation.** Reported AUC/Brier come from a
+  held-out split of the *same* synthetic generator; performance on real cohorts
+  is unknown and would require prospective evaluation, recalibration, and
+  fairness/subgroup analysis before any clinical consideration.
+- **Single synthetic institution.** The cohort mirrors *one* older-adult
+  institutional population; it does not capture between-site case-mix,
+  care-pathway, or device-heterogeneity effects a multi-site deployment would
+  face.
+- **No uncertainty quantification (statistical models under the Bayesian framework).** One of the key characteristics in digital twins' construction is to be able of quantifying uncertainty around the estimate of interest. For illustration purposes, a logistic regression model was fitted; however, tests with `brms` + `marginaleffects` packages were successfully performed for next-generation applications.
+- **Not a medical device.** Nothing here has been reviewed or cleared by any
+  regulator (e.g. FDA); it must not be used to inform real patient care.
+
 
 ---
 
@@ -356,27 +521,6 @@ can rebuild the entire system from scratch:
 
 ```bash
 Rscript setup.R        # or: Rscript data-raw/generate_synthetic_data.R
-```
-
-## Publishing to GitHub
-
-The repository contains **only synthetic data and original MIT-licensed code**,
-so it is safe to publish. Secrets live solely in `.Renviron` (git-ignored);
-`.Renviron.example` holds empty placeholders — **never** commit real keys.
-
-```bash
-git init
-git add .
-git commit -m "Clinical Digital Twin Monitoring System (hackathon MVP)"
-git branch -M main
-git remote add origin https://github.com/<you>/clinical-digital-twin.git
-git push -u origin main
-```
-
-Before the first push, sanity-check that no real credentials are staged:
-
-```bash
-git grep -nE "sk-ant-|[0-9]{8,}:AA" -- . ':!*.lock'   # should print nothing
 ```
 
 ## License
