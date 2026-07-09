@@ -305,6 +305,18 @@ sensible directions.
   accelerometry (activity counts + mean vector magnitude) — mirroring a morning
   clinical routine. Higher-frequency streams are aggregated to these daily
   features; sub-daily modeling is out of scope for 48h.
+- **Ingestion is simulated at build time, not live.** The intended data flow is:
+  historical (synthetic) cohort → one wearable read-out per patient each morning
+  at 06:00 CET → 24h/7d risk predictions off the full stored timeline → what-if
+  simulation. The daily 06:00 cadence is faithfully encoded in the stored
+  timestamps, but the **entire** span (start date … "today") is generated in a
+  single build step (`data-raw/generate_synthetic_data.R`); there is **no live
+  scheduler/cron** appending a fresh row each morning. `R/ingest_daily.R`
+  (`cdt_append_daily()`) is a **placeholder** for a real institutional feed: it
+  appends one new synthetic day per patient on demand, so the append path can be
+  demonstrated and tested, but it is deliberately not wired to a scheduler and is
+  not run during the build/`verify.R` (appending mutates the demo DB and would
+  break checkpoint reproducibility).
 - **Collinear features excluded by design.** Accelerometry *counts* are ~0.8
   correlated with the step summaries; feeding both near-duplicate activity
   measures into the ridge splits the shared signal and destabilizes coefficient
