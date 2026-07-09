@@ -204,6 +204,26 @@ test_that("/dashboard needs no patient: returns the cohort dashboard link", {
   expect_null(r$photo)
 })
 
+test_that("/dashboard ignores sticky focus: needs the patient in-message", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cDashSticky")
+
+  # Pin a patient in focus via a patient-scoped query...
+  cdt_bot_reply(con, fx$model, "cDashSticky",
+    sprintf("how is %s trending?", pid), llm_mock = TRUE)
+  expect_equal(cdt_bot_focus("cDashSticky"), pid)
+
+  # ...a bare /dashboard must still return the OVERALL (cohort) link, not P###'s.
+  r <- cdt_bot_reply(con, fx$model, "cDashSticky", "/dashboard", llm_mock = TRUE)
+  expect_match(r$text, "http")
+  expect_false(grepl("[?]patient=", r$text))
+  expect_false(grepl(pid, r$text, fixed = TRUE))
+})
+
 # --- /panel: cohort fall-risk chart ----------------------------------------
 
 test_that("/panel returns a cohort risk chart (PNG) after login", {
@@ -265,6 +285,55 @@ test_that("cdt_bot_wants_patient_list matches roster phrasing, not patient queri
   expect_true(cdt_bot_wants_patient_list("which patients do we have?"))
   expect_true(cdt_bot_wants_patient_list("show the patient roster"))
   expect_false(cdt_bot_wants_patient_list("how is patient P042 doing?"))
+})
+
+# --- deterministic patient-data lookup -------------------------------------
+
+test_that(".cdt_patient_data_field recognizes datum lookups, not chart/what-if", {
+  expect_equal(.cdt_patient_data_field("which medication takes P041?"),
+    "medications")
+  expect_equal(.cdt_patient_data_field("list P041 meds"), "medications")
+  expect_equal(.cdt_patient_data_field("what comorbidities does P041 have?"),
+    "comorbidities")
+  expect_equal(.cdt_patient_data_field("how old is P041?"), "age")
+  expect_equal(.cdt_patient_data_field("does P041 have parkinson's?"),
+    "parkinsons")
+  expect_equal(.cdt_patient_data_field("show patient details"), "profile")
+  # Not a datum lookup: plots, trends, generic questions -> NULL.
+  expect_null(.cdt_patient_data_field("how is P041 trending?"))
+  expect_null(.cdt_patient_data_field("plot P041 steps over time"))
+})
+
+test_that("patient-data lookup answers deterministically with the coded id only", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  nm <- fx$cohort$name[fx$cohort$patient_id == pid]
+  .cmd_login(con, fx$model, "cData")
+
+  r <- cdt_bot_reply(con, fx$model, "cData",
+    sprintf("which medication takes %s?", pid), llm_mock = TRUE)
+  # Deterministic template -> no chart, coded id present, synthetic name absent.
+  expect_null(r$photo)
+  expect_match(r$text, pid, fixed = TRUE)
+  expect_match(r$text, "taking", ignore.case = TRUE)
+  if (nzchar(nm)) expect_false(grepl(nm, r$text, fixed = TRUE))
+})
+
+test_that("a what-if for the same patient still routes to the model, not a datum", {
+  fx <- make_test_fixtures()
+  con <- .cmd_seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  cdt_bot_reset()
+  pid <- fx$cohort$patient_id[1]
+  .cmd_login(con, fx$model, "cDataWi")
+
+  # "increase" is what-if language: the datum lookup must NOT intercept it.
+  r <- cdt_bot_reply(con, fx$model, "cDataWi",
+    sprintf("what if we increase %s mobility by 20%%?", pid), llm_mock = TRUE)
+  expect_true(nchar(r$text) > 0)
 })
 
 # --- panel renderer (direct) -----------------------------------------------

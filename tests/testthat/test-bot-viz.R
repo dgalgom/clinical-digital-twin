@@ -33,11 +33,12 @@
 
 # --- classifier taxonomy ---------------------------------------------------
 
-test_that("intent taxonomy is the fixed set of seven renderable intents", {
+test_that("intent taxonomy is the fixed set of eight renderable intents", {
   expect_setequal(
     cdt_bot_intents(),
-    c("fall_history", "functional_history", "steps_over_time",
-      "resting_hr_over_time", "sbp_over_time", "sedentary_over_time", "whatif")
+    c("fall_history", "functional_history", "biomarker_history",
+      "steps_over_time", "resting_hr_over_time", "sbp_over_time",
+      "sedentary_over_time", "whatif")
   )
 })
 
@@ -65,6 +66,24 @@ test_that("deterministic classifier routes queries to the right intent", {
   expect_equal(
     cdt_bot_classify_query("how is patient P004 trending?")$intent,
     "functional_history"
+  )
+  expect_equal(
+    cdt_bot_classify_query("functional evolution of P004")$intent,
+    "functional_history"
+  )
+  # Biomarker overview: general vitals ask, or HR + BP mentioned together.
+  expect_equal(
+    cdt_bot_classify_query("show P004 biomarkers over time")$intent,
+    "biomarker_history"
+  )
+  expect_equal(
+    cdt_bot_classify_query("P004 heart rate and blood pressure")$intent,
+    "biomarker_history"
+  )
+  # A single vitals metric still routes to its one-panel series.
+  expect_equal(
+    cdt_bot_classify_query("resting heart rate trend for P004")$intent,
+    "resting_hr_over_time"
   )
   expect_equal(
     cdt_bot_classify_query("what if we increase P004 mobility by 20%?")$intent,
@@ -148,6 +167,56 @@ test_that("history renderer produces a PNG with and without fall markers", {
   unlink(p2)
 
   expect_null(cdt_bot_plot_history(r[0, ], pid))
+})
+
+test_that("paired renderer draws functional and biomarker panels", {
+  fx <- make_test_fixtures()
+  pid <- fx$cohort$patient_id[1]
+  r <- fx$sim$readings[fx$sim$readings$patient_id == pid, ]
+
+  pf <- cdt_bot_plot_pair(r, pid, c("steps", "sedentary"), "Functional history")
+  expect_true(.is_png_file(pf))
+  unlink(pf)
+
+  pb <- cdt_bot_plot_pair(r, pid, c("resting_hr", "sbp"), "Biomarker history")
+  expect_true(.is_png_file(pb))
+  unlink(pb)
+
+  # Guards: empty readings, wrong metric count, unknown metric -> NULL.
+  expect_null(cdt_bot_plot_pair(r[0, ], pid, c("steps", "sedentary"), "x"))
+  expect_null(cdt_bot_plot_pair(r, pid, c("steps"), "x"))
+  expect_null(cdt_bot_plot_pair(r, pid, c("steps", "bogus"), "x"))
+})
+
+test_that("falls-over-time renderer needs at least one fall", {
+  fx <- make_test_fixtures()
+  # Pick a patient who actually has recorded falls.
+  fpid <- names(sort(table(fx$sim$falls$patient_id), decreasing = TRUE))[1]
+  fd <- fx$sim$falls$ts[fx$sim$falls$patient_id == fpid]
+
+  p <- cdt_bot_plot_falls(fd, fpid)
+  expect_true(.is_png_file(p))
+  unlink(p)
+
+  # No falls -> NULL (caller falls back to a "no falls on record" text reply).
+  expect_null(cdt_bot_plot_falls(NULL, fpid))
+  expect_null(cdt_bot_plot_falls(character(0), fpid))
+})
+
+test_that("dispatcher routes the new intents to their paired/falls renderers", {
+  fx <- make_test_fixtures()
+  con <- .seeded_con(fx)
+  on.exit(DBI::dbDisconnect(con))
+  fpid <- names(sort(table(fx$sim$falls$patient_id), decreasing = TRUE))[1]
+
+  spec_f <- list(intent = "functional_history", patient_id = fpid, window = NULL)
+  expect_true(.is_png_file(cdt_bot_render_spec(con, fx$model, fpid, spec_f)))
+
+  spec_b <- list(intent = "biomarker_history", patient_id = fpid, window = NULL)
+  expect_true(.is_png_file(cdt_bot_render_spec(con, fx$model, fpid, spec_b)))
+
+  spec_x <- list(intent = "fall_history", patient_id = fpid, window = NULL)
+  expect_true(.is_png_file(cdt_bot_render_spec(con, fx$model, fpid, spec_x)))
 })
 
 test_that("what-if renderer needs a baseline; NULL otherwise", {

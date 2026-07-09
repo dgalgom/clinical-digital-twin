@@ -25,8 +25,9 @@
 #'
 #' Each intent maps to a concrete renderable chart backed by real stored columns
 #' or model outputs (see docs/data_dictionary.md):
-#'   * `fall_history`         — steps + resting HR timeline with fall markers
-#'   * `functional_history`   — same multi-panel functional overview
+#'   * `fall_history`         — monthly fall counts + cumulative falls over time
+#'   * `functional_history`   — daily steps + sedentary time panels
+#'   * `biomarker_history`    — resting HR + systolic BP panels
 #'   * `steps_over_time`      — daily step_count series
 #'   * `resting_hr_over_time` — daily resting_hr series
 #'   * `sbp_over_time`        — daily systolic BP series
@@ -37,9 +38,9 @@
 #' @export
 cdt_bot_intents <- function() {
   c(
-    "fall_history", "functional_history", "steps_over_time",
-    "resting_hr_over_time", "sbp_over_time", "sedentary_over_time",
-    "whatif"
+    "fall_history", "functional_history", "biomarker_history",
+    "steps_over_time", "resting_hr_over_time", "sbp_over_time",
+    "sedentary_over_time", "whatif"
   )
 }
 
@@ -110,6 +111,19 @@ cdt_bot_classify_query <- function(text, chat_id = NULL) {
     ))
   }
 
+  # Biomarker overview: a general "biomarkers/vitals" ask, OR heart rate AND
+  # blood pressure mentioned together, maps to the paired HR + systolic BP chart.
+  hr_words <- grepl("resting hr|resting heart|heart rate|\\bhr\\b|pulse", t)
+  bp_words <- grepl("sbp|systolic|blood pressure|\\bbp\\b", t)
+  if (grepl("biomarker|vital sign|\\bvitals\\b|physiolog", t) ||
+      (hr_words && bp_words)) {
+    return(list(
+      intent = "biomarker_history", patient_id = pid, window = window,
+      metric = NULL, whatif_overrides = NULL,
+      rationale = "Biomarker/vitals language -> resting HR + systolic BP panels."
+    ))
+  }
+
   # Single-metric series (order matters: check specific metrics first).
   if (grepl("\\bstep|walk|activity|mobil", t)) {
     return(list(
@@ -118,14 +132,14 @@ cdt_bot_classify_query <- function(text, chat_id = NULL) {
       rationale = "Activity/steps language -> daily step count over time."
     ))
   }
-  if (grepl("resting hr|resting heart|heart rate|\\bhr\\b|pulse", t)) {
+  if (hr_words) {
     return(list(
       intent = "resting_hr_over_time", patient_id = pid, window = window,
       metric = "resting_hr", whatif_overrides = NULL,
       rationale = "Heart-rate language -> resting HR over time."
     ))
   }
-  if (grepl("sbp|systolic|blood pressure|\\bbp\\b", t)) {
+  if (bp_words) {
     return(list(
       intent = "sbp_over_time", patient_id = pid, window = window,
       metric = "sbp", whatif_overrides = NULL,
@@ -140,12 +154,12 @@ cdt_bot_classify_query <- function(text, chat_id = NULL) {
     ))
   }
 
-  # Functional / trending overview.
-  if (grepl("function|trend|overview|history|doing|status|how is", t)) {
+  # Functional / trending overview -> steps + sedentary panels.
+  if (grepl("function|trend|overview|history|doing|status|how is|evolution|progress", t)) {
     return(list(
       intent = "functional_history", patient_id = pid, window = window,
       metric = NULL, whatif_overrides = NULL,
-      rationale = "General functional/trend query -> multi-panel functional overview."
+      rationale = "General functional/trend query -> daily steps + sedentary panels."
     ))
   }
 
@@ -373,6 +387,194 @@ cdt_bot_plot_history <- function(readings, patient_id, fall_dates = NULL,
   }
   graphics::mtext("Synthetic data", side = 1, outer = TRUE, adj = 1,
     line = 2.0, cex = 0.7, col = th$muted)
+
+  path
+}
+
+#' Plot two daily metrics as stacked panels sharing a date x-axis
+#'
+#' A general two-panel time-series renderer used for the paired "functional"
+#' (daily steps + sedentary hours) and "biomarker" (resting HR + systolic BP)
+#' overviews. DATES on the shared x-axis; each metric on its own y-axis. This
+#' reuses the single-metric derivations from [.cdt_metric_spec()], so the panels
+#' stay consistent with the standalone series charts.
+#'
+#' @param readings A patient's readings tibble (already window-filtered).
+#' @param patient_id Patient id, for the title.
+#' @param metrics Length-2 character vector of metric keys ("steps",
+#'   "resting_hr", "sbp", "sedentary").
+#' @param title Panel title.
+#' @param window_label Optional human window label for the subtitle.
+#' @return PNG path, or NULL if nothing plottable.
+#' @export
+cdt_bot_plot_pair <- function(readings, patient_id, metrics, title,
+                              window_label = NULL) {
+  if (is.null(readings) || nrow(readings) == 0 || length(metrics) != 2) {
+    return(NULL)
+  }
+  dates <- cdt_ts_to_date(readings$ts)
+  ok <- !is.na(dates)
+  if (!any(ok)) {
+    return(NULL)
+  }
+  dates <- dates[ok]
+
+  # Resolve each metric to (label, unit, derived y-vector) via the shared spec.
+  specs <- lapply(metrics, function(m) {
+    intent <- switch(m,
+      steps = "steps_over_time", resting_hr = "resting_hr_over_time",
+      sbp = "sbp_over_time", sedentary = "sedentary_over_time", m
+    )
+    sp <- .cdt_metric_spec(intent)
+    if (is.null(sp)) {
+      return(NULL)
+    }
+    # Compact panel labels so the rotated y-title fits the two-panel layout.
+    sp$label <- switch(m,
+      steps = "Daily steps", sedentary = "Sedentary",
+      resting_hr = "Resting HR", sbp = "Systolic BP", sp$label
+    )
+    sp$y <- sp$derive(readings)[ok]
+    sp
+  })
+  if (any(vapply(specs, is.null, logical(1)))) {
+    return(NULL)
+  }
+  if (all(vapply(specs, function(s) all(is.na(s$y)), logical(1)))) {
+    return(NULL)
+  }
+
+  th <- .cdt_theme()
+  path <- .cdt_png_open(th)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  graphics::par(
+    mfrow = c(2, 1), oma = c(3.4, 1.6, 3.6, 0.5),
+    mar = c(1.6, 5.4, 1.2, 1.4), family = th$family,
+    col.axis = th$fg, col.lab = th$fg, fg = th$muted
+  )
+  xlim <- range(as.numeric(dates))
+  cols <- c(th$accent, th$accent2)
+
+  draw_panel <- function(sp, colr, show_x) {
+    y <- sp$y
+    if (all(is.na(y))) y <- rep(0, length(y))
+    ylim <- range(y, na.rm = TRUE)
+    if (diff(ylim) == 0) ylim <- ylim + c(-1, 1)
+    graphics::plot.new()
+    graphics::plot.window(xlim = xlim, ylim = ylim)
+    .cdt_grid(th, xlim, ylim)
+    graphics::lines(as.numeric(dates), y, col = colr, lwd = 2.2)
+    graphics::points(as.numeric(dates), y, col = colr, pch = 19, cex = 0.45)
+    graphics::axis(2, col = th$muted, col.axis = th$fg, cex.axis = 0.8,
+      lwd = 0, lwd.ticks = 1, las = 1)
+    graphics::title(ylab = sprintf("%s (%s)", sp$label, sp$unit),
+      line = 3.8, col.lab = th$fg)
+    if (show_x) .cdt_date_axis(dates, th)
+  }
+
+  draw_panel(specs[[1]], cols[1], FALSE)
+  draw_panel(specs[[2]], cols[2], TRUE)
+
+  sub <- if (!is.null(window_label)) {
+    sprintf("Patient %s  \u00b7  %s", patient_id, window_label)
+  } else {
+    sprintf("Patient %s", patient_id)
+  }
+  graphics::mtext(title, side = 3, outer = TRUE, adj = 0, line = 1.4,
+    font = 2, cex = 1.3, col = th$fg)
+  graphics::mtext(sub, side = 3, outer = TRUE, adj = 0, line = 0.2,
+    cex = 0.85, col = th$muted)
+  graphics::mtext("Synthetic data", side = 1, outer = TRUE, adj = 1,
+    line = 2.0, cex = 0.7, col = th$muted)
+
+  path
+}
+
+#' Plot a patient's falls over time (monthly counts + cumulative) to PNG
+#'
+#' A dedicated fall-history chart: monthly fall COUNTS as bars (left y-axis)
+#' with the CUMULATIVE fall total as an overlaid step line (right y-axis), both
+#' over a monthly time x-axis. Returns NULL when the patient has no recorded
+#' falls (caller falls back to a "no falls on record" text reply).
+#'
+#' @param fall_dates Vector of fall `Date`s (or character y-m-d / timestamps).
+#' @param patient_id Patient id, for the title.
+#' @param window_label Optional human window label for the subtitle.
+#' @return PNG path, or NULL if there are no plottable falls.
+#' @export
+cdt_bot_plot_falls <- function(fall_dates, patient_id, window_label = NULL) {
+  if (is.null(fall_dates) || length(fall_dates) == 0) {
+    return(NULL)
+  }
+  fd <- as.Date(substr(as.character(fall_dates), 1, 10))
+  fd <- fd[!is.na(fd)]
+  if (length(fd) == 0) {
+    return(NULL)
+  }
+
+  # Bin to first-of-month; build a continuous monthly axis so gaps show as 0.
+  months <- as.Date(cut(fd, breaks = "month"))
+  span <- seq(min(months), max(months), by = "month")
+  counts <- as.integer(table(factor(format(months, "%Y-%m"),
+    levels = format(span, "%Y-%m"))))
+  cumulative <- cumsum(counts)
+
+  th <- .cdt_theme()
+  path <- .cdt_png_open(th)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  graphics::par(
+    mar = c(4.4, 4.8, 3.6, 4.6), family = th$family,
+    col.axis = th$fg, col.lab = th$fg, fg = th$muted
+  )
+  x <- as.numeric(span)
+  ymax <- max(c(counts, 1), na.rm = TRUE) * 1.25
+
+  # Monthly-count bars (left axis).
+  bw <- if (length(x) > 1) min(diff(x)) * 0.7 else 20
+  graphics::plot.new()
+  graphics::plot.window(xlim = range(x) + c(-bw, bw), ylim = c(0, ymax))
+  graphics::abline(h = pretty(c(0, ymax)), col = th$grid, lwd = 1)
+  graphics::rect(x - bw / 2, 0, x + bw / 2, counts,
+    col = th$accent, border = NA)
+  graphics::axis(2, at = pretty(c(0, ymax)), col = th$muted, col.axis = th$fg,
+    cex.axis = 0.8, lwd = 0, lwd.ticks = 1, las = 1)
+  graphics::title(ylab = "Falls per month", line = 3.0, col.lab = th$fg)
+
+  # Cumulative step line (right axis).
+  cmax <- max(cumulative, 1) * 1.08
+  graphics::par(new = TRUE)
+  graphics::plot.window(xlim = range(x) + c(-bw, bw), ylim = c(0, cmax))
+  graphics::lines(x, cumulative, type = "s", col = th$marker, lwd = 2.2)
+  graphics::points(x, cumulative, col = th$marker, pch = 19, cex = 0.5)
+  graphics::axis(4, at = pretty(c(0, cmax)), col = th$muted,
+    col.axis = th$marker, cex.axis = 0.8, lwd = 0, lwd.ticks = 1, las = 1)
+  graphics::mtext("Cumulative falls", side = 4, line = 3.0, col = th$marker,
+    cex = 0.9)
+
+  # Monthly date axis.
+  by <- if (length(span) <= 14) "1 month" else if (length(span) <= 40) "3 months" else "6 months"
+  at <- seq(min(span), max(span), by = by)
+  graphics::axis(1, at = as.numeric(at), labels = format(at, "%b %Y"),
+    col = th$muted, col.axis = th$fg, cex.axis = 0.8, lwd = 0, lwd.ticks = 1)
+
+  graphics::title(main = "Fall history \u2014 falls over time",
+    col.main = th$fg, font.main = 2, cex.main = 1.3, adj = 0, line = 1.9)
+  sub <- if (!is.null(window_label)) {
+    sprintf("Patient %s  \u00b7  %s  \u00b7  %d fall(s) total",
+      patient_id, window_label, length(fd))
+  } else {
+    sprintf("Patient %s  \u00b7  %d fall(s) total", patient_id, length(fd))
+  }
+  graphics::mtext(sub, side = 3, adj = 0, line = 0.5, cex = 0.85, col = th$muted)
+  graphics::legend("topleft",
+    legend = c("Falls / month", "Cumulative"),
+    fill = c(th$accent, NA), border = NA, lty = c(NA, 1),
+    col = c(th$accent, th$marker), lwd = c(NA, 2.2), bty = "n", cex = 0.8,
+    text.col = th$fg)
+  graphics::mtext("Synthetic data", side = 1, adj = 1, line = 2.6,
+    cex = 0.7, col = th$muted)
 
   path
 }

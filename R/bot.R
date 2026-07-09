@@ -353,11 +353,26 @@ cdt_bot_render_spec <- function(con, model, pid, spec) {
     readings <- cdt_filter_readings_window(readings, win$from, win$to)
   }
 
-  if (intent %in% c("fall_history", "functional_history")) {
+  # Fall history: monthly fall counts + cumulative falls over time.
+  if (identical(intent, "fall_history")) {
     falls <- cdt_get_fall_events(con, pid)
     fall_dates <- if (nrow(falls) > 0) falls$ts else NULL
-    return(cdt_bot_plot_history(readings, pid,
-      fall_dates = fall_dates, window_label = window_label
+    return(cdt_bot_plot_falls(fall_dates, pid, window_label = window_label))
+  }
+
+  # Functional history: daily steps + sedentary time panels.
+  if (identical(intent, "functional_history")) {
+    return(cdt_bot_plot_pair(readings, pid,
+      c("steps", "sedentary"),
+      title = "Functional history", window_label = window_label
+    ))
+  }
+
+  # Biomarker history: resting HR + systolic BP panels.
+  if (identical(intent, "biomarker_history")) {
+    return(cdt_bot_plot_pair(readings, pid,
+      c("resting_hr", "sbp"),
+      title = "Biomarker history", window_label = window_label
     ))
   }
 
@@ -500,6 +515,133 @@ cdt_bot_wants_patient_list <- function(text) {
     grepl("patient (ids|list|roster)", t)
 }
 
+# Deterministic recognizer for "patient data" questions -- the static chart
+# fields shown on the dashboard's Patient-data / Patient-details tabs
+# (medications, comorbidities, demographics, risk-factor flags). These are
+# answered directly from the DB (no LLM), so the reply is fully grounded and the
+# (synthetic) patient name never leaves the process. Returns a field key or NULL.
+#
+# NOTE: this is intentionally NARROW -- it only fires on explicit "what is/does"
+# lookups so trend/what-if/plot queries still flow to the model + chart path.
+.cdt_patient_data_field <- function(text) {
+  t <- tolower(text %||% "")
+  # A datum lookup usually asks "which/what ... <field>" (or "list meds").
+  is_lookup <- grepl("\\b(which|what|does|is|are|list|show|tell me)\\b", t) ||
+    grepl("^/?(meds?|medication|medications|comorbidit|profile|info|details?)\\b", t)
+  if (!is_lookup) {
+    return(NULL)
+  }
+  # Order matters: most specific field wins.
+  if (grepl("medication|\\bmeds?\\b|drug|prescri|taking|takes|\\bon\\b.*(pill|tablet)", t)) {
+    return("medications")
+  }
+  if (grepl("comorbid|condition|diagnos|disease|history of", t)) {
+    return("comorbidities")
+  }
+  if (grepl("parkinson", t)) return("parkinsons")
+  if (grepl("osteoporo", t)) return("osteoporosis")
+  if (grepl("orthostat|hypotens", t)) return("orthostatic_hypotension")
+  if (grepl("polypharmac", t)) return("polypharmacy")
+  if (grepl("prior fall|previous fall|fall.{0,6}(count|number)|number of fall", t)) {
+    return("prior_falls")
+  }
+  if (grepl("\\bage\\b|how old", t)) return("age")
+  if (grepl("\\bsex\\b|gender", t)) return("sex")
+  # A bare "patient details / profile / info" request -> the whole card.
+  if (grepl("profile|details?|\\binfo\\b|summary|about (this )?patient|who is", t)) {
+    return("profile")
+  }
+  NULL
+}
+
+# Build a grounded, deterministic reply for a patient-data lookup, reading the
+# static `patients` row from the DB. Coded patient id only -- the synthetic
+# `name` is deliberately NOT shown, matching the LLM de-identification policy.
+# `patient` is a one-row tibble from cdt_get_patient(). Returns a character
+# scalar, or NULL if the field is unknown.
+.cdt_patient_data_answer <- function(patient, pid, field) {
+  yn <- function(x) if (isTRUE(as.integer(x) == 1L)) "yes" else "no"
+  meds_txt <- function(m) {
+    m <- trimws(m %||% "")
+    if (!nzchar(m)) {
+      return(NULL)
+    }
+    parts <- trimws(strsplit(m, ";", fixed = TRUE)[[1]])
+    parts <- parts[nzchar(parts)]
+    if (length(parts) == 0) NULL else parts
+  }
+  como_txt <- function(c) {
+    c <- trimws(c %||% "")
+    if (!nzchar(c)) {
+      return(NULL)
+    }
+    parts <- trimws(strsplit(c, "[;,]")[[1]])
+    parts <- gsub("_", " ", parts[nzchar(parts)])
+    if (length(parts) == 0) NULL else parts
+  }
+
+  switch(field,
+    medications = {
+      meds <- meds_txt(patient$medications)
+      if (is.null(meds)) {
+        sprintf("Patient %s has no medications on record.", pid)
+      } else {
+        sprintf("Patient %s is currently taking: %s.", pid,
+          paste(meds, collapse = ", "))
+      }
+    },
+    comorbidities = {
+      como <- como_txt(patient$comorbidities)
+      if (is.null(como)) {
+        sprintf("Patient %s has no comorbidities recorded.", pid)
+      } else {
+        sprintf("Patient %s has the following recorded comorbidities: %s.",
+          pid, paste(como, collapse = ", "))
+      }
+    },
+    parkinsons = sprintf("Patient %s: Parkinson's disease \u2014 %s.", pid,
+      yn(patient$parkinsons)),
+    osteoporosis = sprintf("Patient %s: osteoporosis \u2014 %s.", pid,
+      yn(patient$osteoporosis)),
+    orthostatic_hypotension = sprintf(
+      "Patient %s: orthostatic hypotension \u2014 %s.", pid,
+      yn(patient$orthostatic_hypotension)),
+    polypharmacy = sprintf("Patient %s: polypharmacy \u2014 %s.", pid,
+      yn(patient$polypharmacy)),
+    prior_falls = sprintf("Patient %s has %d prior fall(s) on record.", pid,
+      as.integer(patient$prior_falls %||% 0L)),
+    age = sprintf("Patient %s is %d years old.", pid,
+      as.integer(patient$age)),
+    sex = sprintf("Patient %s is recorded as sex %s.", pid,
+      as.character(patient$sex)),
+    profile = {
+      meds <- meds_txt(patient$medications)
+      como <- como_txt(patient$comorbidities)
+      flags <- c(
+        if (isTRUE(as.integer(patient$parkinsons) == 1L)) "Parkinson's",
+        if (isTRUE(as.integer(patient$osteoporosis) == 1L)) "osteoporosis",
+        if (isTRUE(as.integer(patient$orthostatic_hypotension) == 1L))
+          "orthostatic hypotension",
+        if (isTRUE(as.integer(patient$polypharmacy) == 1L)) "polypharmacy"
+      )
+      paste(
+        sprintf("Patient %s \u2014 age %d, sex %s.", pid,
+          as.integer(patient$age), as.character(patient$sex)),
+        sprintf("Risk factors: %s.",
+          if (length(flags) == 0) "none flagged" else paste(flags, collapse = ", ")),
+        sprintf("Prior falls: %d.", as.integer(patient$prior_falls %||% 0L)),
+        sprintf("Medications (%d): %s.",
+          as.integer(patient$n_medications %||% length(meds %||% character(0))),
+          if (is.null(meds)) "none on record" else paste(meds, collapse = ", ")),
+        sprintf("Comorbidities: %s.",
+          if (is.null(como)) "none recorded" else paste(como, collapse = ", ")),
+        sep = "\n"
+      )
+    },
+    NULL
+  )
+}
+
 # A short plain-language model explanation for /explain.
 .cdt_explain_text <- function() {
   paste(
@@ -614,15 +756,17 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
   }
 
   # --- Cohort-level commands (no single patient needed) ---------------------
-  # /dashboard opens the web app. With a patient in focus it deep-links to that
-  # patient; otherwise it returns the cohort-level dashboard URL.
+  # /dashboard opens the web app. It is deliberately NOT sticky: it deep-links to
+  # a patient ONLY when that patient is named in this same message; otherwise it
+  # returns the cohort-level dashboard URL. (A bare /dashboard after a patient
+  # query gives the overall dashboard, not the last patient's deep link.)
   if (!is.null(cmd) && cmd$cmd == "dashboard") {
-    focus_pid <- cdt_bot_extract_patient(text) %||% cdt_bot_focus(chat_id)
-    if (!is.null(focus_pid) && nzchar(focus_pid)) {
-      cdt_bot_focus(chat_id, focus_pid)
+    here_pid <- cdt_bot_extract_patient(text)
+    if (!is.null(here_pid) && nzchar(here_pid)) {
+      cdt_bot_focus(chat_id, here_pid)
       return(list(text = paste(
-        sprintf("Here's %s in the interactive dashboard:", focus_pid),
-        .cdt_dashboard_url(focus_pid),
+        sprintf("Here's %s in the interactive dashboard:", here_pid),
+        .cdt_dashboard_url(here_pid),
         sep = "\n"
       ), photo = NULL))
     }
@@ -746,6 +890,22 @@ cdt_bot_reply <- function(con, model, chat_id, text, llm_mock = NULL) {
       text = sprintf("Patient %s not found in the (synthetic) database.", pid),
       photo = NULL
     ))
+  }
+
+  # --- Patient DATA lookup (static chart fields, deterministic, no LLM) ------
+  # Answer "which meds does P041 take?", "P041 comorbidities", "patient details"
+  # etc. straight from the DB. Skipped when the message is a what-if / plot
+  # request so those keep flowing to the model + chart path below. Coded id only.
+  if (is.null(cmd)) {
+    is_whatif <- !is.null(cdt_bot_parse_whatif(text)) ||
+      grepl("what if|what-if|whatif|simulate|if we|increase|decrease|reduce|lower|boost|remove|stop|deprescribe", tolower(text))
+    field <- if (!is_whatif) .cdt_patient_data_field(text) else NULL
+    if (!is.null(field)) {
+      ans <- .cdt_patient_data_answer(patient, pid, field)
+      if (!is.null(ans)) {
+        return(list(text = ans, photo = NULL))
+      }
+    }
   }
 
   # --- Patient-scoped commands ----------------------------------------------
