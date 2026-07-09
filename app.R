@@ -133,6 +133,21 @@ dashboard_ui <- function() {
         uiOutput("alerts_list")
       ),
       tabPanel(
+        "Post-fall huddles",
+        br(),
+        p(paste("Every fall should trigger a structured huddle. Falls below are",
+          "awaiting one. Draft grounds on the 72h of pre-fall sensor data; the",
+          "clinician reviews, edits, and saves - the AI never writes the record.")),
+        fluidRow(
+          column(5, actionButton("refresh_huddles",
+            "Refresh open huddles", class = "btn-primary")),
+          column(7, div(style = "padding-top:6px;color:#8b98a5;",
+            textOutput("huddles_status", inline = TRUE)))
+        ),
+        br(),
+        uiOutput("huddles_list")
+      ),
+      tabPanel(
         "Cohort overview",
         br(),
         fluidRow(
@@ -337,6 +352,130 @@ server <- function(input, output, session) {
         sprintf("%d open alert(s), most recent first.", nrow(al))),
       div(cards)
     )
+  })
+
+  # --- Post-fall huddles (P0-4) --------------------------------------------
+  # Falls awaiting a structured huddle. The AI drafts (grounded on 72h pre-fall
+  # sensor data); the clinician edits and saves. The draft NEVER writes the
+  # record - only the explicit Save action does, via cdt_complete_huddle().
+  huddles_refresh <- reactiveVal(0)
+
+  open_huddles <- reactive({
+    req(auth())
+    huddles_refresh()
+    cdt_get_open_huddles(con)
+  })
+
+  observeEvent(input$refresh_huddles, {
+    req(auth())
+    huddles_refresh(huddles_refresh() + 1)
+    output$huddles_status <- renderText({
+      sprintf("%d fall(s) awaiting a huddle.", nrow(open_huddles()))
+    })
+  })
+
+  output$huddles_list <- renderUI({
+    req(auth())
+    oh <- open_huddles()
+    if (nrow(oh) == 0) {
+      return(p(style = "color:#8b98a5;",
+        "No open post-fall huddles. Every recorded fall has been actioned."))
+    }
+    # Each row offers a "Start huddle" button that posts the event_id back.
+    start_js <- "Shiny.setInputValue('start_huddle', %d, {priority:'event'});"
+    cards <- lapply(seq_len(nrow(oh)), function(i) {
+      div(style = sprintf(
+        "margin:6px 0;padding:10px 14px;border-left:4px solid %s;background:%s;border-radius:6px;",
+        "#f9a825", CDT_PANEL),
+        fluidRow(
+          column(9,
+            div(style = "font-weight:600;",
+              oh$patient_id[i], "  ",
+              span(style = "font-size:11px;color:#f9a825;text-transform:uppercase;",
+                paste0("fall ", substr(as.character(oh$ts[i]), 1, 10)))),
+            div(style = "font-size:13px;color:#c9d1d9;",
+              sprintf("Recorded severity: %s. Needs a post-fall huddle.",
+                oh$severity[i] %||% "unspecified"))),
+          column(3, div(style = "text-align:right;",
+            tags$button(class = "btn btn-sm btn-outline-light",
+              onclick = sprintf(start_js, oh$event_id[i]), "Start huddle")))
+        )
+      )
+    })
+    tagList(
+      p(style = "color:#8b98a5;font-size:12px;",
+        sprintf("%d open huddle(s), most recent fall first.", nrow(oh))),
+      div(cards)
+    )
+  })
+
+  # Start a huddle: draft (grounded, mock-safe) and open an editable modal.
+  observeEvent(input$start_huddle, {
+    req(auth())
+    eid <- as.integer(input$start_huddle)
+    fall <- cdt_get_fall_event(con, eid)
+    if (nrow(fall) == 0) return(NULL)
+    draft <- tryCatch(cdt_draft_huddle_summary(con, model, eid),
+      error = function(e) NULL)
+    if (is.null(draft)) draft <- ""
+    showModal(modalDialog(
+      title = sprintf("Post-fall huddle - %s (fall %s)",
+        fall$patient_id[1], substr(as.character(fall$ts[1]), 1, 10)),
+      size = "l", easyClose = FALSE,
+      p(style = "color:#8b98a5;font-size:12px;",
+        paste("AI draft grounded on the 72h of pre-fall sensor data. Review and",
+          "edit every field before saving - this becomes the clinical record.")),
+      fluidRow(
+        column(6, textInput("hd_location", "Location", placeholder = "e.g. bathroom")),
+        column(6, textInput("hd_activity", "Activity at fall",
+          placeholder = "e.g. transferring from bed"))
+      ),
+      fluidRow(
+        column(6, selectInput("hd_injury", "Injury level",
+          choices = c("None", "Minor", "Moderate", "Severe"), selected = "None")),
+        column(6, textInput("hd_factors", "Contributing factors",
+          placeholder = "e.g. orthostatic BP, sedating meds"))
+      ),
+      textAreaInput("hd_summary", "Huddle summary (AI draft - editable)",
+        value = draft, width = "100%", height = "180px"),
+      textAreaInput("hd_plan", "Plan / precautions", width = "100%", height = "80px",
+        placeholder = "e.g. hourly rounding, med review, bed-exit alarm"),
+      tags$input(type = "hidden", id = "hd_event_id", value = eid),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("save_huddle", "Save huddle", class = "btn-primary")
+      )
+    ))
+    # Keep the event id server-side too (hidden input is display-only).
+    active_huddle_id(eid)
+  })
+
+  active_huddle_id <- reactiveVal(NULL)
+
+  observeEvent(input$save_huddle, {
+    req(auth())
+    eid <- active_huddle_id()
+    if (is.null(eid)) {
+      removeModal()
+      return(NULL)
+    }
+    cdt_complete_huddle(con, eid,
+      fields = list(
+        location = input$hd_location,
+        activity_at_fall = input$hd_activity,
+        injury_level = input$hd_injury,
+        contributing_factors = input$hd_factors,
+        plan = input$hd_plan,
+        huddle_summary = input$hd_summary
+      ),
+      completed_by = auth()$username %||% auth()$role %||% "clinician")
+    active_huddle_id(NULL)
+    removeModal()
+    huddles_refresh(huddles_refresh() + 1)
+    output$huddles_status <- renderText({
+      sprintf("Huddle saved. %d fall(s) still awaiting a huddle.",
+        nrow(open_huddles()))
+    })
   })
 
   # --- Cohort table --------------------------------------------------------

@@ -165,6 +165,39 @@ cdt_db_init_schema <- function(con) {
     CREATE INDEX IF NOT EXISTS idx_alerts_patient
       ON alerts(patient_id, created_at);")
 
+  # Post-fall huddle fields (P0-4). `fall_events` was historically labels-only
+  # (patient_id, ts, severity). The structured post-fall huddle stores its
+  # findings on the same row. These are ADDITIVE columns: the training-table
+  # builder reads only patient_id + ts, so the model/labels are unaffected. We
+  # add them with idempotent ALTER guards so an existing DB is upgraded in place
+  # (CREATE TABLE IF NOT EXISTS cannot add columns to an already-created table).
+  .cdt_add_fall_huddle_columns(con)
+
+  invisible(TRUE)
+}
+
+# Idempotently add the post-fall huddle columns to fall_events. SQLite has no
+# "ADD COLUMN IF NOT EXISTS", so we introspect the existing columns first and
+# only add the ones that are missing. Safe to call on every init.
+.cdt_add_fall_huddle_columns <- function(con) {
+  existing <- DBI::dbGetQuery(con, "PRAGMA table_info(fall_events);")$name
+  huddle_cols <- c(
+    location             = "TEXT",
+    activity_at_fall     = "TEXT",
+    injury_level         = "TEXT",
+    contributing_factors = "TEXT",
+    plan                 = "TEXT",
+    huddle_summary       = "TEXT",
+    huddle_completed_by  = "TEXT",
+    huddle_completed_at  = "TEXT"
+  )
+  for (col in names(huddle_cols)) {
+    if (!col %in% existing) {
+      DBI::dbExecute(con, sprintf(
+        "ALTER TABLE fall_events ADD COLUMN %s %s;", col, huddle_cols[[col]]
+      ))
+    }
+  }
   invisible(TRUE)
 }
 
@@ -231,6 +264,82 @@ cdt_get_fall_events <- function(con, patient_id = NULL) {
     )
   }
   tibble::as_tibble(res)
+}
+
+#' Fetch a single fall event by id (P0-4)
+#'
+#' @param con A DBI connection.
+#' @param event_id Fall event identifier.
+#' @return A one-row tibble, or a zero-row tibble if not found.
+#' @export
+cdt_get_fall_event <- function(con, event_id) {
+  tibble::as_tibble(DBI::dbGetQuery(con,
+    "SELECT * FROM fall_events WHERE event_id = ?;",
+    params = list(event_id)
+  ))
+}
+
+#' List falls that still need a post-fall huddle (P0-4)
+#'
+#' A fall is "open" until its huddle is completed (`huddle_completed_at` is
+#' NULL). Most-recent first, so the shift can action the freshest falls.
+#'
+#' @param con A DBI connection.
+#' @return A tibble of un-huddled fall events (zero-row if none).
+#' @export
+cdt_get_open_huddles <- function(con) {
+  tibble::as_tibble(DBI::dbGetQuery(con,
+    "SELECT * FROM fall_events
+       WHERE huddle_completed_at IS NULL
+       ORDER BY ts DESC, event_id DESC;"
+  ))
+}
+
+#' Save a completed post-fall huddle onto its fall event (P0-4)
+#'
+#' Persists the structured huddle findings the clinician reviewed/edited. The
+#' LLM draft NEVER writes here directly: this is only called from an explicit
+#' clinician save action, so the stored record reflects a human decision.
+#'
+#' @param con A DBI connection.
+#' @param event_id Fall event identifier.
+#' @param fields Named list of huddle fields to store. Recognised keys:
+#'   `location`, `activity_at_fall`, `injury_level`, `contributing_factors`,
+#'   `plan`, `huddle_summary`. Unknown keys are ignored.
+#' @param completed_by Optional user identifier (username/role).
+#' @param completed_at Optional ISO timestamp; defaults to `datetime('now')`.
+#' @return Invisibly the number of rows updated (1 on success, 0 if not found).
+#' @export
+cdt_complete_huddle <- function(con, event_id, fields = list(),
+                                completed_by = NULL, completed_at = NULL) {
+  stopifnot(!is.null(event_id))
+  allowed <- c("location", "activity_at_fall", "injury_level",
+    "contributing_factors", "plan", "huddle_summary")
+  fields <- fields[intersect(names(fields), allowed)]
+
+  set_cols <- character(0)
+  params <- list()
+  for (k in names(fields)) {
+    set_cols <- c(set_cols, sprintf("%s = ?", k))
+    v <- fields[[k]]
+    params <- c(params, list(if (is.null(v)) NA_character_ else as.character(v)))
+  }
+  # Always stamp completion.
+  set_cols <- c(set_cols, "huddle_completed_by = ?")
+  params <- c(params, list(if (is.null(completed_by)) NA_character_ else
+    as.character(completed_by)))
+  if (is.null(completed_at)) {
+    set_cols <- c(set_cols, "huddle_completed_at = datetime('now')")
+  } else {
+    set_cols <- c(set_cols, "huddle_completed_at = ?")
+    params <- c(params, list(as.character(completed_at)))
+  }
+
+  sql <- sprintf("UPDATE fall_events SET %s WHERE event_id = ?;",
+    paste(set_cols, collapse = ", "))
+  params <- c(params, list(event_id))
+  n <- DBI::dbExecute(con, sql, params = params)
+  invisible(n)
 }
 
 #' Log a clinician-initiated intervention (P0-3 closed loop)
