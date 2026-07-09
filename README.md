@@ -1,4 +1,4 @@
-# Clinical Digital Twin Monitoring System
+# Claudician: Clinical Digital Twin Monitoring System
 
 An end-to-end R system that lets clinicians visualize patient vitals/activity
 data and run **"what-if" simulations on statistical digital twins** to estimate
