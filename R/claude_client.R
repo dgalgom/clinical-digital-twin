@@ -105,13 +105,17 @@ cdt_llm_is_mock <- function(mock = NULL) {
 #' @param system_prompt Optional system prompt override.
 #' @param mock Optional explicit mock override (`TRUE`/`FALSE`).
 #' @param max_tokens Max response tokens.
+#' @param temperature Optional sampling temperature passed to the live backend.
+#'   `NULL` (default) leaves the backend default untouched; provided for the
+#'   simulation's retry-at-lower-temperature idiom. Ignored in mock mode.
 #' @return Character scalar reply text.
 #' @export
 cdt_claude_reply <- function(user_message,
                              context = NULL,
                              system_prompt = NULL,
                              mock = NULL,
-                             max_tokens = 400) {
+                             max_tokens = 400,
+                             temperature = NULL) {
   if (is.null(system_prompt)) {
     system_prompt <- paste(
       "You are a trusted clinical colleague helping nursing-home staff make",
@@ -158,13 +162,14 @@ cdt_claude_reply <- function(user_message,
   # only the transport (endpoint + auth + response shape) differs. Groq's
   # Llama 3.3 70B is a low-latency alternative to Claude for the Telegram bot.
   if (identical(cdt_llm_backend(), "groq")) {
-    return(.cdt_groq_call(system_prompt, grounded_user, max_tokens))
+    return(.cdt_groq_call(system_prompt, grounded_user, max_tokens, temperature))
   }
-  .cdt_claude_call(system_prompt, grounded_user, max_tokens)
+  .cdt_claude_call(system_prompt, grounded_user, max_tokens, temperature)
 }
 
 # Live Anthropic Messages API call. Returns reply text or a safe error string.
-.cdt_claude_call <- function(system_prompt, grounded_user, max_tokens) {
+.cdt_claude_call <- function(system_prompt, grounded_user, max_tokens,
+                             temperature = NULL) {
   key <- Sys.getenv("ANTHROPIC_API_KEY")
   body <- list(
     model = cdt_claude_model(),
@@ -172,6 +177,9 @@ cdt_claude_reply <- function(user_message,
     system = system_prompt,
     messages = list(list(role = "user", content = grounded_user))
   )
+  if (!is.null(temperature)) {
+    body$temperature <- as.numeric(temperature)
+  }
 
   resp <- httr2::request("https://api.anthropic.com/v1/messages") |>
     httr2::req_headers(
@@ -203,7 +211,8 @@ cdt_claude_reply <- function(user_message,
 # prompt to a `system` message and the grounded prompt to a `user` message.
 # Returns reply text or a safe error string, mirroring the Claude path so the
 # bot's error handling is identical regardless of backend.
-.cdt_groq_call <- function(system_prompt, grounded_user, max_tokens) {
+.cdt_groq_call <- function(system_prompt, grounded_user, max_tokens,
+                           temperature = NULL) {
   key <- Sys.getenv("GROQ_API_KEY")
   body <- list(
     model = cdt_groq_model(),
@@ -213,6 +222,9 @@ cdt_claude_reply <- function(user_message,
       list(role = "user", content = grounded_user)
     )
   )
+  if (!is.null(temperature)) {
+    body$temperature <- as.numeric(temperature)
+  }
 
   resp <- httr2::request("https://api.groq.com/openai/v1/chat/completions") |>
     httr2::req_headers(
