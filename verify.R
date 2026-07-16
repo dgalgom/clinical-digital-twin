@@ -11,7 +11,10 @@
 #   4. The digital twin predicts and responds to a counterfactual.
 #   5. The REST API router builds (plumber).
 #   6. The Telegram bot replies in deterministic mock mode.
-#   7. The statistical-adequacy checkpoint passes.
+#   7. Shift-triage change detection surfaces movement alerts.
+#   8. The statistical-adequacy checkpoint passes.
+#   9. The multi-agent simulation runs a 3-day mock A/B pair with a valid,
+#      non-leaking hidden P08 experiment.
 #
 # Prints a numbered PASS/FAIL log and exits non-zero on the first failure, so it
 # doubles as a CI gate. No network access is required.
@@ -147,6 +150,57 @@ if (!identical(rc, 0L)) {
   fail("checkpoints/evaluate_model.R reported statistical inadequacy")
 }
 ok("model passed AUC/Brier/directionality/latency checks")
+
+# --- 9. Multi-agent simulation smoke (mock) -------------------------------
+step(9, "Running a 3-day multi-agent simulation (mock)")
+# Isolated throwaway DB so the demo database is never touched. Runs a short
+# mock A/B pair, then asserts predictions are valid, the day-gate is logged,
+# the hidden P08 ground truth is populated, and no latent/hazard/fall field
+# leaks onto any clinical surface.
+sim_con <- cdt_db_connect(tempfile(fileext = ".sqlite"))
+cdt_db_init_schema(sim_con)
+cdt_sim_init_schema(sim_con)
+sim_cols <- c(
+  "patient_id", "name", "age", "sex", "parkinsons", "osteoporosis",
+  "orthostatic_hypotension", "polypharmacy", "prior_falls", "n_medications",
+  "medications", "comorbidities"
+)
+cdt_db_write(sim_con, "patients", cdt_sim_patients()[, sim_cols], append = TRUE)
+sa <- cdt_run_simulation(sim_con, model, "verify_sim", "A", days = 3,
+  seed = 424242L, mock = TRUE)
+sb <- cdt_run_simulation(sim_con, model, "verify_sim", "B", days = 3,
+  seed = 424242L, mock = TRUE)
+if (sa$days_completed != 3L || sb$days_completed != 3L) {
+  fail("3-day mock A/B simulation did not complete")
+}
+if (!identical(sa$p08_onset, sb$p08_onset)) {
+  fail("A/B branches drew different P08 onset (RNG stream not shared)")
+}
+sim_preds <- cdt_sim_get_predictions(sim_con, "verify_sim", "A")
+if (nrow(sim_preds) == 0 ||
+    !all(sim_preds$p_7d >= 0 & sim_preds$p_7d <= 1) ||
+    !all(sim_preds$p_24h >= 0 & sim_preds$p_24h <= 1)) {
+  fail("simulation predictions out of [0,1]")
+}
+sim_ck <- cdt_sim_get_checkpoints(sim_con, "verify_sim", "A")
+if (nrow(sim_ck) == 0) fail("no daily checkpoints were logged")
+sim_gt <- DBI::dbGetQuery(sim_con,
+  "SELECT COUNT(*) n FROM ground_truth_evaluation WHERE patient_id='P08';")$n
+if (sim_gt == 0) fail("hidden P08 ground truth not populated")
+leak_pat <- "latent|hazard|fall_sampled|intervention_fired"
+sim_ctx <- cdt_patient_context(sim_con, model, "P08")
+sim_snap <- cdt_cohort_snapshot(sim_con, model)
+sim_risk <- cdt_patient_risk(sim_con, model, "P08")
+if (any(grepl(leak_pat, sim_ctx, ignore.case = TRUE)) ||
+    any(grepl(leak_pat, names(sim_snap), ignore.case = TRUE)) ||
+    any(grepl(leak_pat, names(sim_risk), ignore.case = TRUE)) ||
+    exists("cdt_sim_get_ground_truth")) {
+  fail("latent/hazard/fall field leaked onto a clinical surface")
+}
+try(DBI::dbDisconnect(sim_con), silent = TRUE)
+ok(sprintf(paste0("3-day A/B sim complete; P08 onset day %d shared; ",
+  "%d predictions in [0,1]; %d checkpoints; no ground-truth leak"),
+  sa$p08_onset, nrow(sim_preds), nrow(sim_ck)))
 
 cat("\n============================================================\n")
 cat("VERIFICATION PASSED - the system is functional end-to-end.\n")
