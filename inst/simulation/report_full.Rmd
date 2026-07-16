@@ -1,0 +1,100 @@
+---
+title: "Clinical Digital Twin — Full Simulation Report"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+params:
+  data: NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+  fig.width = 8, fig.height = 3.2)
+d <- params$data
+stopifnot(!is.null(d))
+```
+
+## Executive summary
+
+**Run:** `` `r d$meta$simulation_id` `` &middot; branch **`` `r d$meta$branch` ``**
+&middot; `r d$meta$days_run` day(s) &middot; `r d$meta$n_patients` residents
+&middot; generated `r d$meta$generated_at`.
+
+This is a fully auditable account of one branch of the multi-agent simulation
+over the fixed 10-resident module. All data is **synthetic**.
+
+| Metric | Value |
+|---|---|
+| Days completed | `r d$exec$days_run` |
+| Model predictions written | `r d$exec$n_predictions` |
+| Checkpoints passed | `r d$exec$checkpoints_pass` |
+| Checkpoints warned | `r d$exec$checkpoints_warn` |
+| Checkpoints failed | `r d$exec$checkpoints_fail` |
+| Degraded agent decisions (invalid → prior reused) | `r d$exec$degraded_decisions` |
+| Highest 7-day risk resident | `` `r d$exec$highest_risk_patient` `` |
+
+## Per-resident risk trajectories
+
+Each panel plots the model's reported fall probability over the run: 24-hour
+(blue) and 7-day (orange). Dates run left→right; probability on the y-axis.
+
+```{r per-patient, results='asis'}
+theme_cols <- c(p24 = "#2b6cb0", p7 = "#dd6b20")
+for (pid in names(d$patients)) {
+  p <- d$patients[[pid]]
+  cat(sprintf("\n\n### %s (%s)\n\n", pid, p$name))
+  if (length(p$day) == 0) {
+    cat("_No predictions recorded for this resident._\n")
+    next
+  }
+  cat(sprintf(
+    "Final tiers: 24h **%s**, 7d **%s** &middot; peak 7d risk %.1f%%.\n\n",
+    p$final_tier_24h, p$final_tier_7d, 100 * p$peak_p_7d))
+  ylim <- range(c(0, p$p_24h, p$p_7d), na.rm = TRUE)
+  if (diff(ylim) == 0) ylim <- ylim + c(0, 0.01)
+  plot(p$day, p$p_24h, type = "b", pch = 19, col = theme_cols[["p24"]],
+    ylim = ylim, xlab = "Simulation day", ylab = "P(fall)",
+    main = sprintf("%s — reported fall risk", pid), las = 1,
+    cex = 0.6, lwd = 2)
+  lines(p$day, p$p_7d, type = "b", pch = 17, col = theme_cols[["p7"]],
+    cex = 0.6, lwd = 2)
+  legend("topleft", legend = c("24-hour", "7-day"),
+    col = theme_cols, pch = c(19, 17), lwd = 2, bty = "n", cex = 0.85)
+}
+```
+
+## Checkpoint gate log
+
+Every daily checkpoint step and its status. `pass`/`warn` proceed; `fail`
+halts the run.
+
+```{r checkpoints}
+ck <- d$checkpoints
+if (nrow(ck) == 0) {
+  cat("_No checkpoints logged._")
+} else {
+  knitr::kable(ck[, c("day", "step", "status", "detail")],
+    col.names = c("Day", "Step", "Status", "Detail"))
+}
+```
+
+## Traceability appendix
+
+Per-day counts of agent decisions and model predictions, plus how many
+decisions were degraded (invalid agent output → prior-day decision reused).
+This is the audit trail linking each simulated day to its persisted rows.
+
+```{r traceability}
+tr <- d$traceability
+if (nrow(tr) == 0) {
+  cat("_No decisions recorded._")
+} else {
+  knitr::kable(tr,
+    col.names = c("Day", "Decisions", "Invalid (reused)", "Predictions"))
+}
+```
+
+---
+_Synthetic data only. Not for clinical use._

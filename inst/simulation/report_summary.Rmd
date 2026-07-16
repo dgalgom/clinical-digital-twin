@@ -1,0 +1,54 @@
+---
+title: "Clinical Digital Twin — Simulation Summary"
+output:
+  html_document:
+    theme: flatly
+    toc: false
+params:
+  data: NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+d <- params$data
+stopifnot(!is.null(d))
+```
+
+## `r d$meta$simulation_id` — branch `r d$meta$branch`
+
+`r d$meta$days_run` day(s) &middot; overall gate outcome:
+**`r toupper(d$gate_outcome)`** &middot; generated `r d$meta$generated_at`.
+
+All data is **synthetic**. This is a summary (not a full per-resident report):
+it records which checkpoints passed, the obstacles encountered, and what the
+run tolerated versus what halted it.
+
+### Checkpoint tally
+
+| Status | Count |
+|---|---|
+| pass | `r d$status_counts[["pass"]]` |
+| warn | `r d$status_counts[["warn"]]` |
+| fail | `r d$status_counts[["fail"]]` |
+
+```{r failed-days, results='asis'}
+if (length(d$failed_days) == 0) {
+  cat("**No day failed the gate.** The run completed all attempted days.\n")
+} else {
+  cat(sprintf("**Gate failed on day(s):** %s.\n",
+    paste(d$failed_days, collapse = ", ")))
+}
+```
+
+### Obstacles encountered
+
+```{r obstacles, results='asis'}
+if (length(d$obstacles) == 0) {
+  cat("_No warnings or failures were recorded — a clean run._\n")
+} else {
+  for (o in d$obstacles) cat(sprintf("- %s\n", o))
+}
+```
+
+---
+_Synthetic data only. Not for clinical use._
