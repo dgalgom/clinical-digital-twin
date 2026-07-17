@@ -50,5 +50,32 @@ if (length(d$obstacles) == 0) {
 }
 ```
 
+### Validation axes
+
+```{r validation, results='asis'}
+v <- d$validation
+sc <- function(x) sprintf("pass %d / warn %d / fail %d",
+  x[["pass"]], x[["warn"]], x[["fail"]])
+cat("**(i) Technical integrity**\n\n")
+cat(sprintf("- Biological gate: %s\n", sc(v$technical$biological)))
+cat(sprintf("- Model-output gate: %s\n", sc(v$technical$model_output)))
+cat(sprintf("- All predictions in [0,1]: **%s**\n\n",
+  v$technical$all_predictions_in_range))
+ex <- v$experimental
+cat("**(ii) Experimental validity (observable side)**\n\n")
+cat(sprintf("- Branch **%s**; intervention fired: **%s**%s\n",
+  ex$branch, ex$intervention_fired,
+  if (isTRUE(ex$intervention_count > 0))
+    sprintf(" (%d logged preventive review(s))", ex$intervention_count)
+  else ""))
+cat(sprintf("- _%s_\n\n", ex$note))
+sf <- v$safety
+cat("**(iv) Safety / leakage**\n\n")
+cat(sprintf("- Leaked fields in payload: **%d**; ground-truth getter exported: **%s**\n",
+  length(sf$payload_leak_hits), sf$ground_truth_getter_exists))
+cat(sprintf("- **Attestation: %s**\n",
+  if (isTRUE(sf$attestation)) "PASS" else "REVIEW"))
+```
+
 ---
 _Synthetic data only. Not for clinical use._

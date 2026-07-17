@@ -1,0 +1,30 @@
+Project root: /Users/danielgallardogomez/Downloads/clinical-digital-twin
+Mode: LIVE  |  days: 30
+cdt_load_env: set 5 variable(s) from .env: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, GROQ_API_KEY, CDT_APP_URL
+Live LLM backend: claude
+[1] TRUE
+Simulation DB: /Users/danielgallardogomez/Downloads/clinical-digital-twin/data/simulation.sqlite
+
+=== RUN sim1_baseline / A (seed=20260401, flu=FALSE) ===
+  completed 30/30 day(s); P08 onset day = 18
+  gate statuses: pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass
+
+=== RUN sim1_baseline / B (seed=20260401, flu=FALSE) ===
+  completed 30/30 day(s); P08 onset day = 18
+  gate statuses: pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass
+
+=== RUN sim2_flu / A (seed=20260501, flu=TRUE) ===
+  completed 30/30 day(s); P08 onset day = 19
+  gate statuses: pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass
+
+=== RUN sim2_flu / B (seed=20260501, flu=TRUE) ===
+  completed 30/30 day(s); P08 onset day = 19
+  gate statuses: pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass,pass
+
+Generating reports...
+  wrote /Users/danielgallardogomez/Downloads/clinical-digital-twin/data/sim_reports/sim1_baseline_A_full.html
+  wrote /Users/danielgallardogomez/Downloads/clinical-digital-twin/data/sim_reports/sim1_baseline_B_full.html
+  wrote /Users/danielgallardogomez/Downloads/clinical-digital-twin/data/sim_reports/sim2_flu_A_summary.html
+  wrote /Users/danielgallardogomez/Downloads/clinical-digital-twin/data/sim_reports/sim2_flu_B_summary.html
+
+Done. Simulation complete.

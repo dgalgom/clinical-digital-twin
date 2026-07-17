@@ -240,6 +240,21 @@ cdt_sim_flu_config <- function() {
 #' capped at `hazard_ceiling`. Branch B fires a predefined intervention when the
 #' model's reported risk crosses a threshold, reducing the hidden hazard.
 #'
+#' P08 (Joaquin, diabetic peripheral neuropathy) deteriorates the way real
+#' neuropathy-driven fall risk does: NOT through falling step volume — he stays
+#' independent and keeps walking — but through subtler channels the wearable
+#' still sees. As the hidden latent risk rises, `projection` maps it onto the
+#' three observable features the model is sensitive to (verified empirically):
+#' more sedentary/guarding hours (primary), less steady gait (lower accelerometer
+#' magnitude), and a mild resting-HR drift. This is what lets the fall-risk model
+#' actually DETECT the deterioration — so Branch B's model risk can cross the
+#' intervention threshold — while step count stays high, honouring the persona
+#' that the risk "must not be obvious from step volume alone". The projection is
+#' scaled by `latent / hazard_ceiling` (0 before onset, 1 at ceiling). The
+#' intervention dampens the *observable* deterioration too (`intervention_relief`)
+#' — a preventive review improves the resident, so the signal recovers and the
+#' branch does not re-fire every subsequent day.
+#'
 #' @return A named list of experiment parameters.
 #' @export
 cdt_sim_p08_experiment <- function() {
@@ -251,6 +266,15 @@ cdt_sim_p08_experiment <- function() {
     hazard_slope = 0.02,               # per-day latent risk increment after D
     intervention_threshold_24h = 0.15,
     intervention_threshold_7d = 0.25,
-    hazard_reduction = 0.6             # Branch B multiplies hazard by this
+    hazard_reduction = 0.6,            # Branch B multiplies hazard by this
+    # Latent -> observable projection (see @details). Coefficients are the value
+    # added/multiplied at FULL latent (latent == hazard_ceiling); the actual
+    # daily effect scales linearly with latent / hazard_ceiling.
+    projection = list(
+      sedentary_hours_add = 6.0,   # +hours sitting/lying at full latent
+      accel_magnitude_mult = 0.80, # gait steadiness multiplier at full latent
+      resting_hr_add = 6.0,        # +bpm resting-HR drift at full latent
+      intervention_relief = 0.6    # post-intervention: observable effect x this
+    )
   )
 }

@@ -59,6 +59,39 @@ for (f in list.files(file.path(root, "R"), pattern = "\\.R$", full.names = TRUE)
   source(f)
 }
 
+# --- Live mode: load API keys from .env ------------------------------------
+# The mock path needs no credentials, so keys are only loaded for --live.
+# cdt_load_env is non-destructive (shell/CI vars already set always win).
+if (live) {
+  cdt_load_env(root)
+  backend <- tryCatch(cdt_llm_backend(), error = function(e) "claude")
+  if (cdt_llm_is_mock()) {
+    stop("--live requested but no usable API key found; add ANTHROPIC_API_KEY ",
+      "or GROQ_API_KEY to .env (see README).", call. = FALSE)
+  }
+  message(sprintf("Live LLM backend: %s", backend))
+}
+
+# --- Report rendering: make pandoc discoverable ----------------------------
+# rmarkdown needs a pandoc executable. If one is not already visible, point it
+# at a discoverable install (e.g. the pandoc bundled with RStudio/Quarto) so
+# reports render regardless of the calling shell's PATH.
+if (!nzchar(Sys.getenv("RSTUDIO_PANDOC")) &&
+    requireNamespace("rmarkdown", quietly = TRUE) &&
+    !rmarkdown::pandoc_available()) {
+  pandoc_candidates <- c(
+    "/Applications/RStudio.app/Contents/Resources/app/quarto/bin/tools",
+    "/Applications/RStudio.app/Contents/MacOS/quarto/bin/tools",
+    "/usr/local/bin", "/opt/homebrew/bin"
+  )
+  for (cand in pandoc_candidates) {
+    if (file.exists(file.path(cand, "pandoc"))) {
+      Sys.setenv(RSTUDIO_PANDOC = cand)
+      break
+    }
+  }
+}
+
 # --- Separate simulation DB (never the demo DB) ----------------------------
 dir.create(file.path(root, "data"), showWarnings = FALSE)
 sim_db <- file.path(root, "data", "simulation.sqlite")

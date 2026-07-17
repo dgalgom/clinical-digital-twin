@@ -167,6 +167,31 @@ cdt_claude_reply <- function(user_message,
   .cdt_claude_call(system_prompt, grounded_user, max_tokens, temperature)
 }
 
+# Retry policy for live LLM calls. Rate limits (HTTP 429) and transient server
+# errors (500/502/503/529) are retried with exponential backoff; the provider's
+# `Retry-After` header is honored when present. Tunable via env so a dense batch
+# job (the simulation) can retry more patiently than the latency-sensitive bot:
+#   CDT_LLM_MAX_TRIES  (default 5)
+#   CDT_LLM_BACKOFF_CAP seconds, the max single backoff (default 30)
+# Applied identically to the Claude and Groq pipelines so behaviour is uniform.
+.cdt_llm_max_tries <- function() {
+  n <- suppressWarnings(as.integer(Sys.getenv("CDT_LLM_MAX_TRIES", "5")))
+  if (is.na(n) || n < 1) 5L else n
+}
+
+.cdt_req_with_retry <- function(req) {
+  cap <- suppressWarnings(as.numeric(Sys.getenv("CDT_LLM_BACKOFF_CAP", "30")))
+  if (is.na(cap) || cap <= 0) cap <- 30
+  httr2::req_retry(
+    req,
+    max_tries = .cdt_llm_max_tries(),
+    is_transient = function(resp) {
+      httr2::resp_status(resp) %in% c(429L, 500L, 502L, 503L, 529L)
+    },
+    backoff = function(i) min(cap, 2^i)
+  )
+}
+
 # Live Anthropic Messages API call. Returns reply text or a safe error string.
 .cdt_claude_call <- function(system_prompt, grounded_user, max_tokens,
                              temperature = NULL) {
@@ -189,6 +214,7 @@ cdt_claude_reply <- function(user_message,
     ) |>
     httr2::req_body_json(body) |>
     httr2::req_timeout(30) |>
+    .cdt_req_with_retry() |>
     httr2::req_error(is_error = function(r) FALSE) |>
     httr2::req_perform()
 
@@ -233,6 +259,7 @@ cdt_claude_reply <- function(user_message,
     ) |>
     httr2::req_body_json(body) |>
     httr2::req_timeout(30) |>
+    .cdt_req_with_retry() |>
     httr2::req_error(is_error = function(r) FALSE) |>
     httr2::req_perform()
 

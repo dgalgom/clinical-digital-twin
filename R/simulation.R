@@ -72,6 +72,16 @@ cdt_run_simulation <- function(con, model, simulation_id, branch, days = 30,
   # shared stochasticity line up. The intervention is the ONLY divergence.
   set.seed(seed)
   p08_state <- .cdt_p08_latent_init(exp_cfg)
+  # Once Branch B intervenes, the preventive review keeps improving the resident,
+  # so the OBSERVABLE deterioration is damped from then on (relief < 1). Branch A
+  # never intervenes, so its relief stays 1 (full, untreated deterioration).
+  p08_relief <- 1
+  # Consecutive days P08's model risk has sat above threshold. A real preventive
+  # review is triggered by a SUSTAINED signal, not a single transient reading, so
+  # the intervention requires two consecutive over-threshold days. This uses only
+  # the observable model risk (never the hidden latent state).
+  p08_over_streak <- 0L
+  p08_intervened <- FALSE
 
   prior_decisions <- stats::setNames(vector("list", nrow(patients)),
     patients$patient_id)
@@ -87,6 +97,12 @@ cdt_run_simulation <- function(con, model, simulation_id, branch, days = 30,
     physio_today <- dow %in% institution$physio_days
     flu_active <- flu && day >= flu_cfg$start_day &&
       day < (flu_cfg$start_day + flu_cfg$duration_days)
+
+    # Advance the hidden P08 latent risk for TODAY before generating sensors, so
+    # the day's observable projection reflects the current deterioration. The
+    # hazard, intervention decision, and fall sampling still happen at step (6)
+    # below; this only moves the latent increment earlier in the same day.
+    p08_state <- .cdt_p08_update_latent(p08_state, day, exp_cfg)
 
     # (2) Social layer -------------------------------------------------------
     soc <- cdt_sim_social_day(day, affinity, institution, mock = mock,
@@ -133,6 +149,14 @@ cdt_run_simulation <- function(con, model, simulation_id, branch, days = 30,
       reading <- cdt_sim_day_sensors(pt, dec, institution, day,
         start_date = start_date, flu_ctx = flu_ctx, seed = seed + 100 * day + i,
         simulation_id = simulation_id, branch = branch)
+      # Project P08's hidden latent risk onto its observable subtle channels
+      # (sedentary hours up, gait steadiness down, mild HR drift) so the model
+      # can detect the deterioration. Step volume is left untouched. Branch B's
+      # relief (post-intervention) damps the effect; Branch A stays at full.
+      if (identical(pid, exp_cfg$patient)) {
+        reading <- .cdt_p08_project_reading(reading, p08_state$latent, exp_cfg,
+          relief = p08_relief)
+      }
       bio <- validate_biological_plausibility(reading)
       if (bio$status == "fail") bio_status <- "fail"
       cdt_db_write(con, "sensor_readings", reading, append = TRUE)
@@ -180,19 +204,32 @@ cdt_run_simulation <- function(con, model, simulation_id, branch, days = 30,
     }
 
     # (6)+(7) Hidden P08 experiment -----------------------------------------
-    p08_state <- .cdt_p08_update_latent(p08_state, day, exp_cfg)
+    # (latent was already advanced for today at the top of the day so its
+    # observable projection could be applied to P08's sensors above.)
     intervention_fired <- 0L
     hazard <- p08_state$hazard
     p08_pred <- prior_pred[["P08"]]
     if (branch == "B" && !is.null(p08_pred)) {
-      crossed <- (p08_pred$p_24h >= exp_cfg$intervention_threshold_24h) ||
+      over <- (p08_pred$p_24h >= exp_cfg$intervention_threshold_24h) ||
         (p08_pred$p_7d >= exp_cfg$intervention_threshold_7d)
-      if (crossed) {
+      p08_over_streak <- if (over) p08_over_streak + 1L else 0L
+      # Fire once, on a SUSTAINED crossing (>= 2 consecutive over-threshold days),
+      # so single-day transients do not trigger a review. Driven purely by the
+      # observable model risk; the hidden latent state is never consulted here.
+      if (!p08_intervened && p08_over_streak >= 2L) {
         intervention_fired <- 1L
-        # Log a real clinician-style intervention and lower the hidden hazard.
+        p08_intervened <- TRUE
         cdt_log_intervention(con, "P08", "Simulated preventive review",
-          detail = sprintf("branch B day %d threshold crossing", day),
+          detail = sprintf("branch B day %d sustained threshold crossing", day),
           created_by = "simulation")
+        # The preventive review improves the resident going forward, so the
+        # OBSERVABLE deterioration is damped from now on (relief < 1). This lets
+        # Branch B recover and diverge from the untreated Branch A.
+        p08_relief <- as.numeric(exp_cfg$projection$intervention_relief %||% 1)
+      }
+      # Once intervened, the review keeps the hidden hazard lowered every
+      # subsequent day (a persisting care effect, not a one-off).
+      if (p08_intervened) {
         hazard <- hazard * exp_cfg$hazard_reduction
       }
     }

@@ -96,5 +96,87 @@ if (nrow(tr) == 0) {
 }
 ```
 
+## Validation — virtual case-use evidence
+
+This run is presented as a *virtual case use* of the system. Four validation
+axes accompany it: (i) technical integrity, (ii) experimental validity,
+(iii) clinical face-validity, and (iv) safety / leakage.
+
+```{r validation-setup}
+v <- d$validation
+sc <- function(x) sprintf("pass %d / warn %d / fail %d",
+  x[["pass"]], x[["warn"]], x[["fail"]])
+```
+
+### (i) Technical integrity
+
+Automated daily gates over biological plausibility and model-output sanity.
+
+| Gate family | Outcomes | All predictions in [0,1] |
+|---|---|---|
+| Biological plausibility | `r sc(v$technical$biological)` | — |
+| Model-output sanity | `r sc(v$technical$model_output)` | `r v$technical$all_predictions_in_range` |
+| **All checkpoints** | `r sc(v$technical$total)` | — |
+
+### (ii) Experimental validity (observable side)
+
+The blind P08 experiment's hidden A/B fall outcome is a **separate privileged
+analysis** and is deliberately absent here. What the report *can* show is P08's
+observable model risk and, on the intervention branch, whether the scripted
+preventive intervention was logged.
+
+```{r experimental}
+ex <- v$experimental
+cat(sprintf("Branch **%s**. Intervention fired: **%s**%s.\n\n",
+  ex$branch, ex$intervention_fired,
+  if (isTRUE(ex$intervention_count > 0))
+    sprintf(" (%d logged preventive review(s))", ex$intervention_count)
+  else ""))
+if (length(ex$p08_days)) {
+  cat(sprintf("P08 peak 7-day model risk: **%.1f%%**.\n\n",
+    100 * ex$p08_peak_7d))
+} else {
+  cat("_No P08 predictions recorded._\n\n")
+}
+cat(sprintf("_%s_\n", ex$note))
+```
+
+### (iii) Clinical face-validity
+
+Each resident's designed risk signature (from their ficha) paired with the
+observed model outcome, for eyeball validation that trajectories behave as
+intended.
+
+```{r face-validity}
+fv <- v$face_validity
+if (is.null(fv) || nrow(fv) == 0) {
+  cat("_No per-resident data._")
+} else {
+  fv$observed_peak_7d <- sprintf("%.1f%%", 100 * fv$observed_peak_7d)
+  knitr::kable(fv,
+    col.names = c("Resident", "Expected signature",
+      "Observed final 7d tier", "Observed peak 7d"))
+}
+```
+
+### (iv) Safety / leakage attestation
+
+The report payload and the P08 clinical surface are scanned for any restricted
+field (`latent`, `hazard`, `fall_sampled`, `intervention_fired`). The hidden
+ground-truth table has no exported getter by design.
+
+```{r safety}
+sf <- v$safety
+cat(sprintf("- Restricted pattern scanned: `%s`\n", sf$restricted_pattern))
+cat(sprintf("- Leaked fields found in report payload: **%d**\n",
+  length(sf$payload_leak_hits)))
+cat(sprintf("- Ground-truth getter exported: **%s**\n",
+  sf$ground_truth_getter_exists))
+cat(sprintf("- P08 clinical surface clean: **%s**\n",
+  sf$clinical_surface_clean))
+cat(sprintf("\n**Attestation: %s** — no hidden P08 experiment state leaked onto any clinical surface.\n",
+  if (isTRUE(sf$attestation)) "PASS" else "REVIEW"))
+```
+
 ---
 _Synthetic data only. Not for clinical use._

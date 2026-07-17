@@ -120,3 +120,71 @@ cdt_sim_day_sensors <- function(patient, decision, institution_ctx, day,
     quality_flags = NA_character_
   )
 }
+
+#' Project P08's hidden latent risk onto its observable sensor reading
+#'
+#' The blind P08 experiment keeps a hidden latent risk that drives the sampled
+#' fall. For the fall-risk MODEL to be able to detect that deterioration (and so
+#' for the Branch-B intervention arm to be able to fire), the latent risk must
+#' also leave a footprint in the observable signal — exactly as real
+#' neuropathy-driven fall risk does. This function applies that footprint to one
+#' already-generated day of P08 readings, deterministically:
+#'
+#' - `hours_sitting`/`hours_lying` rise (balance-guarding, reduced standing) —
+#'   the channel the model is most sensitive to — with `hours_standing` taken as
+#'   the residual so the three still sum to 24 (validator invariant preserved).
+#' - `accel_magnitude` falls (less steady gait).
+#' - `resting_hr` drifts up mildly (autonomic/diabetic), with `heart_rate`
+#'   following so it stays above resting.
+#' - `step_count` is DELIBERATELY LEFT UNCHANGED: Joaquin keeps walking, so the
+#'   risk is not visible from step volume alone (persona-faithful).
+#'
+#' The effect scales with `frac = latent / hazard_ceiling` (0 before onset, 1 at
+#' ceiling) and is damped by `relief` once Branch B has intervened. It reads and
+#' writes ONLY ordinary clinical sensor columns; it never adds any restricted
+#' field name, so the ground-truth leak attestation is unaffected.
+#'
+#' @param reading A one-row sensor tibble from [cdt_sim_day_sensors()].
+#' @param latent Current hidden latent risk (>= 0).
+#' @param exp_cfg The [cdt_sim_p08_experiment()] config (uses `hazard_ceiling`
+#'   and `projection`).
+#' @param relief Multiplier in [0,1] applied to the projected effect after an
+#'   intervention (1 = full effect, `projection$intervention_relief` = damped).
+#' @return The reading with the subtle channels adjusted.
+#' @keywords internal
+.cdt_p08_project_reading <- function(reading, latent, exp_cfg, relief = 1) {
+  proj <- exp_cfg$projection
+  if (is.null(proj) || latent <= 0) {
+    return(reading)
+  }
+  ceiling <- exp_cfg$hazard_ceiling
+  frac <- if (ceiling > 0) max(0, min(1, latent / ceiling)) else 0
+  eff <- frac * max(0, min(1, relief))
+  if (eff <= 0) {
+    return(reading)
+  }
+
+  # More sedentary/guarding time: split the added hours across sitting + lying,
+  # then re-derive standing as the residual so the invariant sum == 24 holds and
+  # lying stays <= 20 (same guards the generator uses).
+  add_sed <- as.numeric(proj$sedentary_hours_add %||% 0) * eff
+  reading$hours_lying <- pmin(20, reading$hours_lying + 0.4 * add_sed)
+  reading$hours_sitting <- pmin(20 - reading$hours_lying,
+    reading$hours_sitting + 0.6 * add_sed)
+  reading$hours_standing <- pmax(0, 24 - reading$hours_lying - reading$hours_sitting)
+  reading$hours_lying <- round(reading$hours_lying, 2)
+  reading$hours_sitting <- round(reading$hours_sitting, 2)
+  reading$hours_standing <- round(reading$hours_standing, 2)
+
+  # Less steady gait: pull accelerometer magnitude toward the full-latent
+  # multiplier (a value < 1). At eff == 1 the multiplier is proj$accel_*.
+  accel_mult <- 1 - (1 - as.numeric(proj$accel_magnitude_mult %||% 1)) * eff
+  reading$accel_magnitude <- round(reading$accel_magnitude * accel_mult, 3)
+
+  # Mild resting-HR drift; keep heart_rate above resting.
+  hr_add <- as.numeric(proj$resting_hr_add %||% 0) * eff
+  reading$resting_hr <- round(reading$resting_hr + hr_add, 1)
+  reading$heart_rate <- round(pmax(reading$heart_rate, reading$resting_hr + 15), 1)
+
+  reading
+}

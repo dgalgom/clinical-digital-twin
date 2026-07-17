@@ -104,8 +104,137 @@ cdt_sim_report_data <- function(con, simulation_id, branch) {
     ),
     patients = per_patient,
     checkpoints = ck,
-    traceability = trace
+    traceability = trace,
+    validation = .cdt_sim_validation_block(con, simulation_id, branch,
+      ck, preds, dec, per_patient)
   )
+}
+
+# Persona -> expected observable signature, used for the clinical face-validity
+# axis of the validation block. Descriptions mirror the fichas in
+# cdt_sim_patients()$system_prompt (kept here as short display strings).
+.cdt_sim_expected_signatures <- function() {
+  c(
+    P01 = "fear-of-falling: activity below physical capacity, worse without physio",
+    P02 = "Parkinson's wearing-off: mobility fluctuates around med timing",
+    P03 = "night-concentrated risk; daytime activity non-predictive",
+    P04 = "stable low-risk control (social connector)",
+    P05 = "afternoon knee pain: PM mobility below AM",
+    P06 = "progressive decline over 5-7 days after new diuretic",
+    P07 = "morning instability/drowsiness (night benzodiazepine)",
+    P08 = "subtle risk not obvious from step volume (blind experiment)",
+    P09 = "high stable baseline; occasional night agitation",
+    P10 = "non-linear post-hospital recovery (upward trend)"
+  )
+}
+
+# Build the four-axis validation block for a report payload. It reads ONLY the
+# run-keyed sim tables already loaded by the caller (checkpoints, predictions,
+# decisions, per-patient series). It NEVER queries ground_truth_evaluation: the
+# hidden P08 A/B outcome is a separate privileged analysis, deliberately kept
+# out of any clinical/report surface. The safety axis actively scans the very
+# payload the report will render and asserts no restricted field leaked in.
+.cdt_sim_validation_block <- function(con, simulation_id, branch,
+                                      ck, preds, dec, per_patient) {
+  leak_pat <- "latent|hazard|fall_sampled|intervention_fired"
+
+  # (i) Technical integrity: split checkpoint outcomes by gate family. The
+  # orchestrator logs steps: social, agent_json, biological, model.
+  status_of <- function(steps) {
+    rows <- ck[ck$step %in% steps, , drop = FALSE]
+    c(pass = sum(rows$status == "pass"),
+      warn = sum(rows$status == "warn"),
+      fail = sum(rows$status == "fail"))
+  }
+  technical <- list(
+    total = .cdt_ck_status_counts(ck),
+    biological = status_of("biological"),
+    model_output = status_of("model"),
+    all_predictions_in_range = if (nrow(preds)) {
+      all(preds$p_24h >= 0 & preds$p_24h <= 1 &
+          preds$p_7d >= 0 & preds$p_7d <= 1)
+    } else {
+      NA
+    }
+  )
+
+  # (ii) Experimental validity (observable side only). For P08 we surface the
+  # model-risk trajectory and, on Branch B, whether the scripted preventive
+  # intervention was logged (from the interventions table — a legitimate
+  # clinical record, NOT the hidden hazard state). The counterfactual fall
+  # comparison lives in the privileged offline analysis, NOT here.
+  p08 <- preds[preds$patient_id == "P08", , drop = FALSE]
+  p08 <- p08[order(p08$day), , drop = FALSE]
+  interv_n <- .cdt_sim_intervention_count(con)
+  experimental <- list(
+    p08_days = p08$day,
+    p08_p_24h = p08$p_24h,
+    p08_p_7d = p08$p_7d,
+    p08_peak_7d = if (nrow(p08)) max(p08$p_7d, na.rm = TRUE) else NA_real_,
+    branch = branch,
+    intervention_fired = branch == "B" && interv_n > 0,
+    intervention_count = if (branch == "B") interv_n else 0L,
+    note = paste("A/B fall-outcome comparison is a separate privileged",
+      "analysis; this report shows only observable model risk.")
+  )
+
+  # (iii) Clinical face-validity: pair each persona's expected signature with a
+  # coarse observed summary (final tier + peak 7d) for eyeball validation.
+  expected <- .cdt_sim_expected_signatures()
+  face <- do.call(rbind, lapply(names(per_patient), function(pid) {
+    pp <- per_patient[[pid]]
+    data.frame(
+      patient_id = pid,
+      expected = unname(expected[pid]),
+      observed_final_tier_7d = pp$final_tier_7d %||% NA_character_,
+      observed_peak_7d = pp$peak_p_7d %||% NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  # (iv) Safety / leakage: scan the assembled payload's text + names for any
+  # restricted field. The report must carry a positive attestation.
+  scan_targets <- c(
+    unlist(lapply(per_patient, names)),
+    names(preds), names(dec), names(ck),
+    if (nrow(ck)) as.character(ck$detail) else character(0)
+  )
+  leak_hits <- scan_targets[grepl(leak_pat, scan_targets, ignore.case = TRUE)]
+  # Also confirm the clinical surfaces stay clean for P08 in this DB.
+  surface_clean <- tryCatch({
+    ctx <- cdt_patient_context(con, cdt_load_model_safe(), "P08")
+    !any(grepl(leak_pat, ctx, ignore.case = TRUE))
+  }, error = function(e) NA)
+  safety <- list(
+    restricted_pattern = leak_pat,
+    payload_leak_hits = leak_hits,
+    ground_truth_getter_exists = exists("cdt_sim_get_ground_truth"),
+    clinical_surface_clean = surface_clean,
+    attestation = length(leak_hits) == 0 &&
+      !exists("cdt_sim_get_ground_truth")
+  )
+
+  list(technical = technical, experimental = experimental,
+    face_validity = face, safety = safety)
+}
+
+# Best-effort model loader for the safety-surface scan; returns NULL if no model
+# is available so the scan degrades to NA rather than erroring.
+cdt_load_model_safe <- function() {
+  tryCatch(cdt_load_model(), error = function(e) NULL)
+}
+
+# Count simulation-authored preventive interventions for P08 (the Branch B
+# intervention record). Reads the interventions table only — a legitimate
+# clinical record — never the hidden ground_truth_evaluation table. Returns 0
+# on any error so report assembly never fails.
+.cdt_sim_intervention_count <- function(con) {
+  tryCatch({
+    q <- DBI::dbGetQuery(con,
+      "SELECT COUNT(*) AS n FROM interventions
+         WHERE patient_id = 'P08' AND created_by = 'simulation';")
+    as.integer(q$n[[1]])
+  }, error = function(e) 0L)
 }
 
 #' Assemble the SUMMARY report payload for one run (Sim 2 / stress)
@@ -145,6 +274,48 @@ cdt_sim_summary_report <- function(con, simulation_id, branch) {
 
   gate_outcome <- if (status_counts[["fail"]] > 0) "fail" else "pass"
 
+  # Compact four-axis validation for the summary shape: technical gate split,
+  # observable P08/intervention note, and the safety attestation. No per-patient
+  # face-validity table (that is a full-report feature).
+  leak_pat <- "latent|hazard|fall_sampled|intervention_fired"
+  status_of <- function(steps) {
+    rows <- ck[ck$step %in% steps, , drop = FALSE]
+    c(pass = sum(rows$status == "pass"),
+      warn = sum(rows$status == "warn"),
+      fail = sum(rows$status == "fail"))
+  }
+  interv_n <- .cdt_sim_intervention_count(con)
+  scan_targets <- c(names(preds), names(ck),
+    if (nrow(ck)) as.character(ck$detail) else character(0))
+  leak_hits <- scan_targets[grepl(leak_pat, scan_targets, ignore.case = TRUE)]
+  validation <- list(
+    technical = list(
+      total = status_counts,
+      biological = status_of("biological"),
+      model_output = status_of("model"),
+      all_predictions_in_range = if (nrow(preds)) {
+        all(preds$p_24h >= 0 & preds$p_24h <= 1 &
+            preds$p_7d >= 0 & preds$p_7d <= 1)
+      } else {
+        NA
+      }
+    ),
+    experimental = list(
+      branch = branch,
+      intervention_fired = branch == "B" && interv_n > 0,
+      intervention_count = if (branch == "B") interv_n else 0L,
+      note = paste("A/B fall-outcome comparison is a separate privileged",
+        "analysis; not shown in this run report.")
+    ),
+    safety = list(
+      restricted_pattern = leak_pat,
+      payload_leak_hits = leak_hits,
+      ground_truth_getter_exists = exists("cdt_sim_get_ground_truth"),
+      attestation = length(leak_hits) == 0 &&
+        !exists("cdt_sim_get_ground_truth")
+    )
+  )
+
   list(
     meta = list(simulation_id = simulation_id, branch = branch,
       days_run = if (nrow(preds)) max(preds$day) else 0L,
@@ -152,7 +323,8 @@ cdt_sim_summary_report <- function(con, simulation_id, branch) {
     status_counts = status_counts,
     failed_days = failed_days,
     obstacles = obstacles,
-    gate_outcome = gate_outcome
+    gate_outcome = gate_outcome,
+    validation = validation
   )
 }
 
